@@ -1,0 +1,261 @@
+import functools
+from difflib import SequenceMatcher
+from typing import List, Optional, Union
+
+import pytest
+import torch
+
+from tensorrt_llm import LLM
+from tensorrt_llm.llmapi import (CudaGraphConfig, EagleDecodingConfig,
+                                 KvCacheConfig, MTPDecodingConfig,
+                                 RequestOutput, SamplingParams)
+from tensorrt_llm.llmapi.tokenizer import TransformersTokenizer
+from tensorrt_llm.sampling_params import LogitsProcessor, SamplingParams
+
+from ..conftest import llm_models_root
+from .accuracy_core import GSM8K, MMLU, LlmapiAccuracyTestHarness
+
+
+def similarity_score(a, b):
+    "similar compare a and b "
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def similar(a, b, threshold=0.8):
+    "similar compare a and b "
+    return similarity_score(a, b) >= threshold
+
+
+def check_output(outputs: List[RequestOutput],
+                 references: Union[List[str], List[List[str]]],
+                 *,
+                 similar_threshold: float = 0.8,
+                 finish_reasons: Optional[List[str]] = None,
+                 stop_reasons: Optional[List[Union[int, str]]] = None):
+    assert len(outputs) == len(references)
+
+    for i, (output, reference) in enumerate(zip(outputs, references)):
+        if isinstance(reference, list):
+            # N output
+            assert len(output.outputs) == len(reference)
+            for j, (out, ref) in enumerate(zip(output.outputs, reference)):
+                assert similar(out.text, ref, threshold=similar_threshold)
+                if finish_reasons is not None:
+                    assert out.finish_reason == finish_reasons[i][j]
+                if stop_reasons is not None:
+                    assert out.stop_reason == stop_reasons[i][j]
+        else:
+            out = output.outputs[0]
+            assert similar(out.text, reference, threshold=similar_threshold)
+            if finish_reasons is not None:
+                assert out.finish_reason == finish_reasons[i]
+            if stop_reasons is not None:
+                assert out.stop_reason == stop_reasons[i]
+
+
+class MyLogitsProcessor(LogitsProcessor):
+
+    def __init__(self, biased_word_id):
+        self.biased_word_id = biased_word_id
+
+    def __call__(self, req_id: int, logits: torch.Tensor, ids: List[List[int]],
+                 stream_ptr: int, client_id: Optional[int]):
+        stream = None if stream_ptr is None else torch.cuda.ExternalStream(
+            stream_ptr)
+        with torch.cuda.stream(stream):
+            logits[:] = float("-inf")
+            logits[..., self.biased_word_id] = 0
+
+
+class TestFeatureCombination(LlmapiAccuracyTestHarness):
+    PartialLLM = None
+    MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+    MODEL_PATH = f"{llm_models_root()}/llama-3.1-model/Llama-3.1-8B-Instruct"
+
+    def test_overlap_scheduler(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                disable_overlap_scheduler=False,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_cuda_graph(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        cuda_graph_config = CudaGraphConfig(batch_sizes=[4])
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                cuda_graph_config=cuda_graph_config,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_attention_dp(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                enable_attention_dp=True,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_disaggregated_serving(self):
+        pass
+
+    def test_chunked_prefill(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                enable_chunked_prefill=True,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_mtp(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        model_name = "deepseek-ai/DeepSeek-V3-Lite"
+        model_path = f"{llm_models_root()}/DeepSeek-V3-Lite/bf16"
+        mtp_nextn = 2
+        mtp_config = MTPDecodingConfig(num_nextn_predict_layers=mtp_nextn)
+        with self.PartialLLM(
+                model=model_path,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.75),
+                speculative_config=mtp_config,
+        ) as llm:
+            task = GSM8K(model_name)
+            task.evaluate(llm)
+
+    def test_eagle3_one_model(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        eagle_model_dir = f"{llm_models_root()}/EAGLE3-LLaMA3.1-Instruct-8B"
+        draft_len = 4
+        spec_config = EagleDecodingConfig(max_draft_len=draft_len,
+                                          speculative_model_dir=eagle_model_dir,
+                                          eagle3_one_model=True)
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                speculative_config=spec_config,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_eagle3_two_model(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        eagle_model_dir = f"{llm_models_root()}/EAGLE3-LLaMA3.1-Instruct-8B"
+        draft_len = 4
+        spec_config = EagleDecodingConfig(max_draft_len=draft_len,
+                                          speculative_model_dir=eagle_model_dir,
+                                          eagle3_one_model=False)
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                speculative_config=spec_config,
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_torch_sampler(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                sampler_type="TorchSampler",
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_trtllm_sampler(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                sampler_type="TRTLLMSampler",
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_kvcache_reuse(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                kv_cache_config=KvCacheConfig(enable_block_reuse=True,
+                                              free_gpu_memory_fraction=0.5),
+        ) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+
+    def test_slide_window_attention(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        model_name = "google/gemma-3-1b-it"
+        model_path = f"{llm_models_root()}/gemma/gemma-3-1b-it/"
+
+        with self.PartialLLM(
+                model=model_path,
+                kv_cache_config=KvCacheConfig(enable_block_reuse=False,
+                                              enable_partial_reuse=False,
+                                              free_gpu_memory_fraction=0.5),
+        ) as llm:
+            task = MMLU(model_name)
+            task.evaluate(llm)
+
+    def test_logits_post_processor(self):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        model_path = f"{llm_models_root()}/llama-models-v2/TinyLlama-1.1B-Chat-v1.0"
+        tokenizer = TransformersTokenizer.from_pretrained(model_path)
+        biased_word_id = tokenizer.encode("Z", add_special_tokens=False)[-1]
+        sampling_params = SamplingParams(
+            max_tokens=6, logits_processor=MyLogitsProcessor(biased_word_id))
+        prompts = ["A B C"]
+        with self.PartialLLM(
+                model=model_path,
+                tokenizer=model_path,
+                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.4),
+        ) as llm:
+            outputs = llm.generate(prompts, sampling_params=sampling_params)
+            print("---- outputs is: {}".format(outputs), flush=True)
+
+
+class TestOverlapScheduler(TestFeatureCombination):
+    PartialLLM = functools.partial(LLM, disable_overlap_scheduler=False)
