@@ -32,8 +32,7 @@ from tensorrt_llm.executor import (GenerationExecutorWorker, LoRARequest,
                                    PromptAdapterRequest, RequestError)
 from tensorrt_llm.llmapi import (BuildCacheConfig, EagleDecodingConfig,
                                  KvCacheConfig, KvCacheRetentionConfig,
-                                 LookaheadDecodingConfig, MedusaDecodingConfig,
-                                 RequestOutput)
+                                 LookaheadDecodingConfig, MedusaDecodingConfig)
 from tensorrt_llm.llmapi import TrtLlmArgs as LlmArgs
 from tensorrt_llm.llmapi.llm_args import (DynamicBatchConfig, PeftCacheConfig,
                                           SchedulerConfig)
@@ -45,8 +44,7 @@ from tensorrt_llm.llmapi.utils import get_total_gpu_memory
 from tensorrt_llm.lora_helper import LoraConfig
 from tensorrt_llm.models.automodel import AutoConfig, AutoModelForCausalLM
 from tensorrt_llm.models.modeling_utils import SpeculativeDecodingMode
-from tensorrt_llm.sampling_params import (BatchedLogitsProcessor,
-                                          LogitsProcessor, SamplingParams)
+from tensorrt_llm.sampling_params import BatchedLogitsProcessor, SamplingParams
 
 # isort: off
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
@@ -55,7 +53,7 @@ from llmapi.lora_test_utils import (
     check_llama_7b_multi_lora_from_request_test_harness,
     check_llama_7b_multi_unique_lora_adapters_from_request)
 from utils.llm_data import llm_models_root
-from utils.util import force_ampere, similar, skip_gpu_memory_less_than_40gb, skip_pre_hopper, skip_single_gpu
+from utils.util import check_output, MyLogitsProcessor, force_ampere, similar, skip_gpu_memory_less_than_40gb, skip_pre_hopper, skip_single_gpu
 # isort: on
 
 # The unittests are based on the tiny-llama, which is fast to build and run.
@@ -77,33 +75,6 @@ def get_reference_count(obj):
     Get the reference count.
     '''
     return sys.getrefcount(obj) - 1
-
-
-def check_output(outputs: List[RequestOutput],
-                 references: Union[List[str], List[List[str]]],
-                 *,
-                 similar_threshold: float = 0.8,
-                 finish_reasons: Optional[List[str]] = None,
-                 stop_reasons: Optional[List[Union[int, str]]] = None):
-    assert len(outputs) == len(references)
-
-    for i, (output, reference) in enumerate(zip(outputs, references)):
-        if isinstance(reference, list):
-            # N output
-            assert len(output.outputs) == len(reference)
-            for j, (out, ref) in enumerate(zip(output.outputs, reference)):
-                assert similar(out.text, ref, threshold=similar_threshold)
-                if finish_reasons is not None:
-                    assert out.finish_reason == finish_reasons[i][j]
-                if stop_reasons is not None:
-                    assert out.stop_reason == stop_reasons[i][j]
-        else:
-            out = output.outputs[0]
-            assert similar(out.text, reference, threshold=similar_threshold)
-            if finish_reasons is not None:
-                assert out.finish_reason == finish_reasons[i]
-            if stop_reasons is not None:
-                assert out.stop_reason == stop_reasons[i]
 
 
 def llm_test_harness(model_dir: str,
@@ -1129,20 +1100,6 @@ def test_invalid_embedding_bias_fp8():
         return
 
     assert (0)
-
-
-class MyLogitsProcessor(LogitsProcessor):
-
-    def __init__(self, biased_word_id):
-        self.biased_word_id = biased_word_id
-
-    def __call__(self, req_id: int, logits: torch.Tensor, ids: List[List[int]],
-                 stream_ptr: int, client_id: Optional[int]):
-        stream = None if stream_ptr is None else torch.cuda.ExternalStream(
-            stream_ptr)
-        with torch.cuda.stream(stream):
-            logits[:] = float("-inf")
-            logits[..., self.biased_word_id] = 0
 
 
 def tinyllama_logits_processor_test_harness(backend=None, **llm_kwargs):

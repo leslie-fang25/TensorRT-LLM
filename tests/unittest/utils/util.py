@@ -3,7 +3,7 @@ import unittest
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, List, Optional, Union
 
 import pynvml
 import pytest
@@ -20,10 +20,12 @@ from parameterized import parameterized
 
 import tensorrt_llm
 from tensorrt_llm._utils import torch_dtype_to_trt, trt_dtype_to_torch
+from tensorrt_llm.llmapi import RequestOutput
 from tensorrt_llm.llmapi.utils import get_total_gpu_memory
 from tensorrt_llm.plugin.plugin import ContextFMHAType
 from tensorrt_llm.quantization import QuantMode
 from tensorrt_llm.runtime import Session, TensorInfo
+from tensorrt_llm.sampling_params import LogitsProcessor
 
 
 def ASSERT_DRV(err):
@@ -446,3 +448,44 @@ def check_accuracy(a, b, atol, rtol, percent):
     if not (mismatch_percent < 1 - percent):
         raise Exception("Mismatch percentage is %f for rtol %f" %
                         (mismatch_percent, rtol))
+
+
+class MyLogitsProcessor(LogitsProcessor):
+
+    def __init__(self, biased_word_id):
+        self.biased_word_id = biased_word_id
+
+    def __call__(self, req_id: int, logits: torch.Tensor, ids: List[List[int]],
+                 stream_ptr: int, client_id: Optional[int]):
+        stream = None if stream_ptr is None else torch.cuda.ExternalStream(
+            stream_ptr)
+        with torch.cuda.stream(stream):
+            logits[:] = float("-inf")
+            logits[..., self.biased_word_id] = 0
+
+
+def check_output(outputs: List[RequestOutput],
+                 references: Union[List[str], List[List[str]]],
+                 *,
+                 similar_threshold: float = 0.8,
+                 finish_reasons: Optional[List[str]] = None,
+                 stop_reasons: Optional[List[Union[int, str]]] = None):
+    assert len(outputs) == len(references)
+
+    for i, (output, reference) in enumerate(zip(outputs, references)):
+        if isinstance(reference, list):
+            # N output
+            assert len(output.outputs) == len(reference)
+            for j, (out, ref) in enumerate(zip(output.outputs, reference)):
+                assert similar(out.text, ref, threshold=similar_threshold)
+                if finish_reasons is not None:
+                    assert out.finish_reason == finish_reasons[i][j]
+                if stop_reasons is not None:
+                    assert out.stop_reason == stop_reasons[i][j]
+        else:
+            out = output.outputs[0]
+            assert similar(out.text, reference, threshold=similar_threshold)
+            if finish_reasons is not None:
+                assert out.finish_reason == finish_reasons[i]
+            if stop_reasons is not None:
+                assert out.stop_reason == stop_reasons[i]

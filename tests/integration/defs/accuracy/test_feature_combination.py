@@ -1,70 +1,33 @@
 import functools
-from difflib import SequenceMatcher
-from typing import List, Optional, Union
+import os
+import sys
+from contextlib import contextmanager
 
 import pytest
-import torch
 
 from tensorrt_llm import LLM
 from tensorrt_llm.llmapi import (CudaGraphConfig, EagleDecodingConfig,
-                                 KvCacheConfig, MTPDecodingConfig,
-                                 RequestOutput, SamplingParams)
+                                 KvCacheConfig, MTPDecodingConfig)
 from tensorrt_llm.llmapi.tokenizer import TransformersTokenizer
-from tensorrt_llm.sampling_params import LogitsProcessor, SamplingParams
+from tensorrt_llm.sampling_params import SamplingParams
 
 from ..conftest import llm_models_root
 from .accuracy_core import GSM8K, MMLU, LlmapiAccuracyTestHarness
 
 
-def similarity_score(a, b):
-    "similar compare a and b "
-    return SequenceMatcher(None, a, b).ratio()
-
-
-def similar(a, b, threshold=0.8):
-    "similar compare a and b "
-    return similarity_score(a, b) >= threshold
-
-
-def check_output(outputs: List[RequestOutput],
-                 references: Union[List[str], List[List[str]]],
-                 *,
-                 similar_threshold: float = 0.8,
-                 finish_reasons: Optional[List[str]] = None,
-                 stop_reasons: Optional[List[Union[int, str]]] = None):
-    assert len(outputs) == len(references)
-
-    for i, (output, reference) in enumerate(zip(outputs, references)):
-        if isinstance(reference, list):
-            # N output
-            assert len(output.outputs) == len(reference)
-            for j, (out, ref) in enumerate(zip(output.outputs, reference)):
-                assert similar(out.text, ref, threshold=similar_threshold)
-                if finish_reasons is not None:
-                    assert out.finish_reason == finish_reasons[i][j]
-                if stop_reasons is not None:
-                    assert out.stop_reason == stop_reasons[i][j]
-        else:
-            out = output.outputs[0]
-            assert similar(out.text, reference, threshold=similar_threshold)
-            if finish_reasons is not None:
-                assert out.finish_reason == finish_reasons[i]
-            if stop_reasons is not None:
-                assert out.stop_reason == stop_reasons[i]
-
-
-class MyLogitsProcessor(LogitsProcessor):
-
-    def __init__(self, biased_word_id):
-        self.biased_word_id = biased_word_id
-
-    def __call__(self, req_id: int, logits: torch.Tensor, ids: List[List[int]],
-                 stream_ptr: int, client_id: Optional[int]):
-        stream = None if stream_ptr is None else torch.cuda.ExternalStream(
-            stream_ptr)
-        with torch.cuda.stream(stream):
-            logits[:] = float("-inf")
-            logits[..., self.biased_word_id] = 0
+@contextmanager
+def add_path(path):
+    """
+    Add a temp path to import util func.
+    """
+    sys.path.insert(0, path)
+    try:
+        yield
+    finally:
+        try:
+            sys.path.remove(path)
+        except ValueError:
+            pass  # in case, path already been removed.
 
 
 class TestFeatureCombination(LlmapiAccuracyTestHarness):
@@ -242,19 +205,30 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
             pytest.skip(
                 "LLMs are not well-suited for feature combination testing.")
 
-        model_path = f"{llm_models_root()}/llama-models-v2/TinyLlama-1.1B-Chat-v1.0"
-        tokenizer = TransformersTokenizer.from_pretrained(model_path)
-        biased_word_id = tokenizer.encode("Z", add_special_tokens=False)[-1]
-        sampling_params = SamplingParams(
-            max_tokens=6, logits_processor=MyLogitsProcessor(biased_word_id))
-        prompts = ["A B C"]
-        with self.PartialLLM(
-                model=model_path,
-                tokenizer=model_path,
-                kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.4),
-        ) as llm:
-            outputs = llm.generate(prompts, sampling_params=sampling_params)
-            print("---- outputs is: {}".format(outputs), flush=True)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        target_dir = os.path.join(current_dir, '../../../', 'unittest')
+
+        with add_path(target_dir):
+            from utils.util import MyLogitsProcessor, check_output
+
+            model_path = f"{llm_models_root()}/llama-models-v2/TinyLlama-1.1B-Chat-v1.0"
+            tokenizer = TransformersTokenizer.from_pretrained(model_path)
+            biased_word_id = tokenizer.encode("Z", add_special_tokens=False)[-1]
+            sampling_params = SamplingParams(
+                max_tokens=6,
+                logits_processor=MyLogitsProcessor(biased_word_id))
+            prompts = ["A B C"]
+            references = ["Z Z Z Z Z Z"]
+            similar_threshold = 0.8
+            with self.PartialLLM(
+                    model=model_path,
+                    tokenizer=model_path,
+                    kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.4),
+            ) as llm:
+                outputs = llm.generate(prompts, sampling_params=sampling_params)
+                check_output(outputs,
+                             references,
+                             similar_threshold=similar_threshold)
 
 
 class TestOverlapScheduler(TestFeatureCombination):
