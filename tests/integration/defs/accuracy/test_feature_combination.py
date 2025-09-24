@@ -1,3 +1,4 @@
+import copy
 import functools
 import os
 import sys
@@ -34,6 +35,8 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
     PartialLLM = None
     MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
     MODEL_PATH = f"{llm_models_root()}/llama-3.1-model/Llama-3.1-8B-Instruct"
+    ctx_server_config = {}
+    gen_server_config = {}
 
     def test_overlap_scheduler(self):
         if self.PartialLLM == None:
@@ -76,7 +79,33 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
             task.evaluate(llm)
 
     def test_disaggregated_serving(self):
-        pass
+        if self.PartialLLM == None or not self.ctx_server_config or not self.gen_server_config:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+
+        from .test_disaggregated_serving import launch_disaggregated_llm
+        ctx_server_config = copy.deepcopy(self.ctx_server_config)
+        gen_server_config = copy.deepcopy(self.gen_server_config)
+        ctx_server_config["cache_transceiver_config"] = {"backend": "DEFAULT"}
+        gen_server_config["cache_transceiver_config"] = {"backend": "DEFAULT"}
+        disaggregated_server_config = {
+            "hostname": "localhost",
+            "port": 8000,
+            "backend": "pytorch",
+            "context_servers": {
+                "num_instances": 1,
+                "urls": ["localhost:8001"]
+            },
+            "generation_servers": {
+                "num_instances": 1,
+                "urls": ["localhost:8002"]
+            }
+        }
+        with launch_disaggregated_llm(disaggregated_server_config,
+                                      ctx_server_config, gen_server_config,
+                                      self.MODEL_PATH) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
 
     def test_chunked_prefill(self):
         if self.PartialLLM == None:
@@ -246,3 +275,5 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
 
 class TestOverlapScheduler(TestFeatureCombination):
     PartialLLM = functools.partial(LLM, disable_overlap_scheduler=False)
+    ctx_server_config = {"disable_overlap_scheduler": True}
+    gen_server_config = {"disable_overlap_scheduler": False}
