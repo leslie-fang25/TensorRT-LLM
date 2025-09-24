@@ -70,12 +70,15 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
             pytest.skip(
                 "LLMs are not well-suited for feature combination testing.")
 
+        model_name = "deepseek-ai/DeepSeek-V3-Lite"
+        model_path = f"{llm_models_root()}/DeepSeek-V3-Lite/bf16"
+
         with self.PartialLLM(
-                model=self.MODEL_PATH,
+                model=model_path,
                 kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
                 enable_attention_dp=True,
         ) as llm:
-            task = MMLU(self.MODEL_NAME)
+            task = MMLU(model_name)
             task.evaluate(llm)
 
     def test_disaggregated_serving(self):
