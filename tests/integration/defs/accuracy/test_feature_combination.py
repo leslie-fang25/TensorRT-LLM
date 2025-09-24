@@ -12,7 +12,7 @@ from tensorrt_llm.llmapi.tokenizer import TransformersTokenizer
 from tensorrt_llm.sampling_params import SamplingParams
 
 from ..conftest import llm_models_root
-from .accuracy_core import GSM8K, MMLU, LlmapiAccuracyTestHarness
+from .accuracy_core import GSM8K, MMLU, JsonModeEval, LlmapiAccuracyTestHarness
 
 
 @contextmanager
@@ -229,6 +229,19 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
                 check_output(outputs,
                              references,
                              similar_threshold=similar_threshold)
+
+    def test_guided_decoding(self, mocker):
+        if self.PartialLLM == None:
+            pytest.skip(
+                "LLMs are not well-suited for feature combination testing.")
+        mocker.patch.dict(os.environ, {"TRTLLM_XGUIDANCE_LENIENT": "1"})
+
+        with self.PartialLLM(
+                model=self.MODEL_PATH,
+                guided_decoding_backend="xgrammar",
+        ) as llm:
+            task = JsonModeEval(self.MODEL_NAME)
+            task.evaluate(llm)
 
 
 class TestOverlapScheduler(TestFeatureCombination):
