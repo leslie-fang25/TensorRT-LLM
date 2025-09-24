@@ -70,12 +70,16 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
             pytest.skip(
                 "LLMs are not well-suited for feature combination testing.")
 
-        with self.PartialLLM(
-                model=self.MODEL_PATH,
+        model_name = "meta-llama/Llama-3.1-8B-Instruct"
+        model_path = f"{llm_models_root()}/llama-3.1-model/Llama-3.1-8B-Instruct"
+
+        with LLM(
+                model=model_path,
+                disable_overlap_scheduler=False,
                 kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
                 enable_attention_dp=True,
         ) as llm:
-            task = MMLU(self.MODEL_NAME)
+            task = MMLU(model_name)
             task.evaluate(llm)
 
     def test_disaggregated_serving(self):
