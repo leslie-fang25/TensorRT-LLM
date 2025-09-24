@@ -65,6 +65,7 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
             task = MMLU(self.MODEL_NAME)
             task.evaluate(llm)
 
+    @pytest.mark.skip_less_device(4)
     def test_attention_dp(self):
         if self.PartialLLM == None:
             pytest.skip(
@@ -76,6 +77,9 @@ class TestFeatureCombination(LlmapiAccuracyTestHarness):
         with self.PartialLLM(
                 model=model_path,
                 kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.5),
+                tensor_parallel_size=4,
+                pipeline_parallel_size=1,
+                moe_expert_parallel_size=1,
                 enable_attention_dp=True,
         ) as llm:
             task = MMLU(model_name)
