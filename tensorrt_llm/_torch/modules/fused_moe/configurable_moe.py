@@ -424,7 +424,6 @@ class ConfigurableMoE(MoE):
 
         # Determine and setup communication strategy (may fallback to AllGather)
         self.determine_communication_method(all_rank_num_tokens_padded, num_chunks)
-
         # ========== Step 3: Execute MoE computation ==========
         if num_chunks == 1:
             # Single chunk case
@@ -554,10 +553,24 @@ class ConfigurableMoE(MoE):
         self._load_balancer_start_wait_gpu_stage(is_first_call)
 
         # ========== Step 2: Apply routing (only if backend supports load balancer) ==========
-
         if self.backend._supports_load_balancer():
             # Separated routing: ConfigurableMoE calls routing_method
-            token_selected_experts, token_final_scales = self.routing_method.apply(router_logits)
+            if router_logits.numel() == 0:
+                # For dtype, refer to https://github.com/NVIDIA/TensorRT-LLM/blob/55f3cda66d05a2e5686c9c7512721beb522bc8b7/tensorrt_llm/_torch/modules/fused_moe/routing.py#L327
+                token_selected_experts = torch.empty(
+                    (0, self.routing_method.experts_per_token),
+                    dtype=torch.int32,
+                    device=router_logits.device,
+                )
+                token_final_scales = torch.empty(
+                    (0, self.routing_method.experts_per_token),
+                    dtype=torch.float32,
+                    device=router_logits.device,
+                )
+            else:
+                token_selected_experts, token_final_scales = self.routing_method.apply(
+                    router_logits
+                )
 
             # Convert to standard dtypes for consistency with other MoE implementations
             token_selected_experts = token_selected_experts.to(torch.int32)
