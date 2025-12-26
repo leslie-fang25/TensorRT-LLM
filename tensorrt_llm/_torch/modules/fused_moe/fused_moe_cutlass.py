@@ -320,14 +320,20 @@ class CutlassFusedMoE(MoE):
                     else:
                         x_row = x.shape[0]
                         hidden_size = x.shape[-1]
-                        x, x_sf = torch.ops.trtllm.fp4_quantize(
-                            x, self.fc31_input_scale, self.scaling_vector_size,
-                            False, False)
-                        if x_sf.numel() == 0 and x_sf.dim() == 1:
+                        if x_row == 0:
                             # View torch.Size[0] in to (0, -1) is not supported
-                            x_sf = x_sf.view(
+                            x = torch.empty((0, hidden_size // 2),
+                                            dtype=torch.uint8,
+                                            device=x.device)
+                            x_sf = torch.empty(
                                 (0,
-                                 hidden_size // int(self.scaling_vector_size)))
+                                 hidden_size // int(self.scaling_vector_size)),
+                                dtype=torch.uint8,
+                                device=x.device)
+                        else:
+                            x, x_sf = torch.ops.trtllm.fp4_quantize(
+                                x, self.fc31_input_scale,
+                                self.scaling_vector_size, False, False)
                     # Reshape x_sf to 2D for post-quant communication
                     if x_sf is not None and x_sf.numel() != 0:
                         x_sf = x_sf.view((x_row, -1))
@@ -500,8 +506,19 @@ class CutlassFusedMoE(MoE):
         self._load_balancer_start_wait_gpu_stage(is_first_call)
 
         # apply routing
-        token_selected_experts, token_final_scales = self.routing_method.apply(
-            router_logits)
+        if router_logits.numel() == 0:
+            token_selected_experts = torch.empty(
+                (0, self.routing_method.experts_per_token),
+                dtype=torch.int32,
+                device=router_logits.device)
+            token_final_scales = torch.empty(
+                (0, self.routing_method.experts_per_token),
+                dtype=torch.float32,
+                device=router_logits.device)
+        else:
+            token_selected_experts, token_final_scales = self.routing_method.apply(
+                router_logits)
+
         assert token_selected_experts.shape[
             1] == self.routing_method.experts_per_token
         assert token_selected_experts.shape == token_final_scales.shape
