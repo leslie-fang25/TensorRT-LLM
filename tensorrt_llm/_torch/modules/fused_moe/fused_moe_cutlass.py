@@ -507,6 +507,7 @@ class CutlassFusedMoE(MoE):
 
         # apply routing
         if router_logits.numel() == 0:
+            # For dtype, refer to https://github.com/NVIDIA/TensorRT-LLM/blob/55f3cda66d05a2e5686c9c7512721beb522bc8b7/tensorrt_llm/_torch/modules/fused_moe/routing.py#L327
             token_selected_experts = torch.empty(
                 (0, self.routing_method.experts_per_token),
                 dtype=torch.int32,
