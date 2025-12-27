@@ -320,20 +320,14 @@ class CutlassFusedMoE(MoE):
                     else:
                         x_row = x.shape[0]
                         hidden_size = x.shape[-1]
-                        if x_row == 0:
+                        x, x_sf = torch.ops.trtllm.fp4_quantize(
+                            x, self.fc31_input_scale, self.scaling_vector_size,
+                            False, False)
+                        if x_sf.numel() == 0 and x_sf.dim() == 1:
                             # View torch.Size[0] in to (0, -1) is not supported
-                            x = torch.empty((0, hidden_size // 2),
-                                            dtype=torch.uint8,
-                                            device=x.device)
-                            x_sf = torch.empty(
+                            x_sf = x_sf.view(
                                 (0,
-                                 hidden_size // int(self.scaling_vector_size)),
-                                dtype=torch.uint8,
-                                device=x.device)
-                        else:
-                            x, x_sf = torch.ops.trtllm.fp4_quantize(
-                                x, self.fc31_input_scale,
-                                self.scaling_vector_size, False, False)
+                                 hidden_size // int(self.scaling_vector_size)))
                     # Reshape x_sf to 2D for post-quant communication
                     if x_sf is not None and x_sf.numel() != 0:
                         x_sf = x_sf.view((x_row, -1))
