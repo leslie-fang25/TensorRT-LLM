@@ -548,6 +548,18 @@ class ConfigurableMoE(MoE):
         - Separated routing: fused_moe_wide_ep.py:456-780, fused_moe_cutlass.py:236-443
         - Fused routing: fused_moe_trtllm_gen.py
         """
+        if x.numel() == 0:
+            return self._forward_empty_tensor(
+                x,
+                router_logits,
+                output_dtype,
+                all_rank_num_tokens,
+                use_dp_padding,
+                is_first_call,
+                is_last_call,
+                do_finalize,
+                workspace,
+            )
 
         # ========== Step 1: EPLB - Start wait GPU stage ==========
         self._load_balancer_start_wait_gpu_stage(is_first_call)
@@ -779,6 +791,141 @@ class ConfigurableMoE(MoE):
             workspace_1 = workspaces[1]
 
         return workspace_0, workspace_1
+
+    def _forward_empty_tensor(
+        self,
+        x: Union[torch.Tensor, Fp4QuantizedTensor],
+        router_logits: torch.Tensor,
+        output_dtype: Optional[torch.dtype],
+        all_rank_num_tokens: List[int],
+        use_dp_padding: bool,
+        is_first_call: bool,
+        is_last_call: bool,
+        do_finalize: bool = True,
+        workspace: Optional[dict] = None,
+    ) -> torch.Tensor:
+        print(
+            ">>>> rank is: {}; start the _forward_empty_tensor".format(self.mapping.tp_rank),
+            flush=True,
+        )
+
+        # ========== Step 1: EPLB - Start wait GPU stage ==========
+        self._load_balancer_start_wait_gpu_stage(is_first_call)
+
+        # ========== Step 2: Apply routing (only if backend supports load balancer) ==========
+        if self.backend._supports_load_balancer():
+            token_selected_experts = torch.empty(
+                (0, self.routing_method.experts_per_token),
+                dtype=torch.int32,
+                device=router_logits.device,
+            )
+            token_final_scales = torch.empty(
+                (0, self.routing_method.experts_per_token),
+                dtype=torch.float32,
+                device=router_logits.device,
+            )
+            # Convert token_final_scales to bfloat16 if needed (TRTLLMGen backend requires it)
+            if token_final_scales is not None and isinstance(self.backend, TRTLLMGenFusedMoE):
+                token_final_scales = token_final_scales.to(torch.bfloat16)
+            # assert self.apply_router_weight_on_input, (
+            #     "Current empty tensor doesn't support apply_router_weight_on_input."
+            # )
+            if self.apply_router_weight_on_input:
+                x = x * token_final_scales.to(x.dtype)
+                token_final_scales = None
+
+        else:
+            # Fused routing: Backend handles routing internally
+            # EPLB must NOT be enabled for fused routing backends
+            assert not self._using_load_balancer(), (
+                f"EPLB is enabled but backend {self.backend.__class__.__name__} "
+                f"has fused routing (does not support routing separation)"
+            )
+            # For fused routing, we don't have token_selected_experts yet
+            # Will be handled by backend.run_moe_with_routing() later
+            token_selected_experts = None
+            token_final_scales = None
+
+        assert not self.layer_load_balancer, (
+            "Current empty tensor doesn't support layer_load_balancer."
+        )
+        token_selected_slots = token_selected_experts
+
+        assert isinstance(self.comm, NVLinkOneSided), (
+            "Current empty tensor only support NVLinkOneSided."
+        )
+
+        if self.comm is not None:
+            supports_post_quant = self.comm.supports_post_quant_dispatch()
+            # post_quant_comm = True
+            if supports_post_quant:
+                if self.backend.has_any_quant:
+                    assert self.backend.has_nvfp4, (
+                        "Current empty tensor only support post_quant_comm nvfp4."
+                    )
+
+                    hidden_size = x.shape[-1]
+                    # View torch.Size[0] in to (0, -1) is not supported
+                    x = torch.empty((0, hidden_size // 2), dtype=torch.uint8, device=x.device)
+                    x_sf = torch.empty(
+                        (0, hidden_size // int(self.backend.scaling_vector_size)),
+                        dtype=torch.uint8,
+                        device=x.device,
+                    )
+                else:
+                    x_sf = None
+
+                dispatch_kwargs = {}
+                if hasattr(self, "quant_scales") and self.quant_scales is not None:
+                    if hasattr(self.quant_scales, "pre_quant_scale_1"):
+                        dispatch_kwargs["pre_quant_scale"] = self.quant_scales.pre_quant_scale_1
+
+                x, x_sf, token_selected_slots, token_final_scales = self.comm.dispatch(
+                    hidden_states=x,
+                    hidden_states_sf=x_sf,
+                    token_selected_slots=token_selected_slots,
+                    token_final_scales=token_final_scales,
+                    all_rank_num_tokens=all_rank_num_tokens,
+                    use_dp_padding=use_dp_padding,
+                    **dispatch_kwargs,
+                )
+
+            else:
+                assert supports_post_quant, "Current empty tensor only support supports_post_quant."
+        else:
+            # x, x_sf = self.backend.quantize_input(x, post_quant_comm=False)
+            # x_sf = None
+            # post_quant_comm = False
+            assert self.comm is not None, "Current empty tensor doesn't support self.comm is None."
+
+        # Fake backend.run_moe
+        # final_hidden_states = self.forward_fake(x, router_logits, all_rank_num_tokens=all_rank_num_tokens)
+        # final_hidden_states = self.forward_fake(x, router_logits, output_dtype=output_dtype)
+
+        # forward_fake with nvfp4 support has some problem, so hardcode it here now
+
+        assert self.comm.payload_in_workspace, "Only verify payload_in_workspace with empty tensor."
+        if self.comm.payload_in_workspace:
+            final_hidden_states = self._get_nvlink_onesided_moe_output(
+                all_rank_num_tokens=all_rank_num_tokens, output_dtype=output_dtype
+            )
+        else:
+            final_hidden_states = x.new_empty((x.shape[0], x.shape[1] * 2), dtype=output_dtype)
+
+        self._load_balancer_start_set_cpu_stage(is_last_call)
+
+        assert isinstance(self.comm, NVLinkOneSided), (
+            "Current empty tensor only support NVLinkOneSided."
+        )
+
+        if self.comm is not None:
+            # Use unified combine interface (reads dispatch state from strategy)
+            final_hidden_states = self.comm.combine(final_hidden_states, payload_in_workspace=False)
+        else:
+            assert self.comm is not None, "Current empty tensor doesn't support self.comm is None."
+        self._load_balancer_done_set_cpu_stage(is_last_call)
+
+        return final_hidden_states
 
     def _forward_multiple_chunks(
         self,
