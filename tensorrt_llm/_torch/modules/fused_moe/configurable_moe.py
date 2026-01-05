@@ -548,7 +548,7 @@ class ConfigurableMoE(MoE):
         - Separated routing: fused_moe_wide_ep.py:456-780, fused_moe_cutlass.py:236-443
         - Fused routing: fused_moe_trtllm_gen.py
         """
-        if x.numel() == 0:
+        if x.numel() == 0 and False:
             return self._forward_empty_tensor(
                 x,
                 router_logits,
@@ -567,7 +567,7 @@ class ConfigurableMoE(MoE):
         # ========== Step 2: Apply routing (only if backend supports load balancer) ==========
         if self.backend._supports_load_balancer():
             # Separated routing: ConfigurableMoE calls routing_method
-            if router_logits.numel() == 0:
+            if router_logits.numel() == 0 and False:
                 # For dtype, refer to https://github.com/NVIDIA/TensorRT-LLM/blob/55f3cda66d05a2e5686c9c7512721beb522bc8b7/tensorrt_llm/_torch/modules/fused_moe/routing.py#L327
                 token_selected_experts = torch.empty(
                     (0, self.routing_method.experts_per_token),
@@ -804,10 +804,10 @@ class ConfigurableMoE(MoE):
         do_finalize: bool = True,
         workspace: Optional[dict] = None,
     ) -> torch.Tensor:
-        print(
-            ">>>> rank is: {}; start the _forward_empty_tensor".format(self.mapping.tp_rank),
-            flush=True,
-        )
+        # print(
+        #     ">>>> rank is: {}; start the _forward_empty_tensor".format(self.mapping.tp_rank),
+        #     flush=True,
+        # )
 
         # ========== Step 1: EPLB - Start wait GPU stage ==========
         self._load_balancer_start_wait_gpu_stage(is_first_call)
@@ -987,6 +987,24 @@ class ConfigurableMoE(MoE):
             all_rank_num_tokens_list, chunk_size_list, use_multi_stream
         )
 
+        chunked_used = torch.ones(num_chunks, dtype=torch.bool)
+        if self.use_dp:
+            # avoid empty chunk in multi chunk case
+            assert x_list[0].numel() != 0, "chunk 0 shouldn't be empty"
+            x_list = list(x_list)
+            router_logits_list = list(router_logits_list)
+            for idx_chunk in range(num_chunks):
+                _x = x_list[idx_chunk]
+                if _x.numel() == 0:
+                    chunked_used[idx_chunk] = False
+                    x_list[idx_chunk] = x_list[0]
+                    router_logits_list[idx_chunk] = router_logits_list[0]
+                    all_rank_num_tokens_list[idx_chunk][self.mapping.tp_rank] = (
+                        all_rank_num_tokens_list[0][self.mapping.tp_rank]
+                    )
+            x_list = tuple(x_list)
+            router_logits_list = tuple(router_logits_list)
+
         # ========== Execute chunking with overlap ==========
         outputs_list = []
         for idx_chunk, (x_chunk, router_logits_chunk) in enumerate(zip(x_list, router_logits_list)):
@@ -1038,7 +1056,8 @@ class ConfigurableMoE(MoE):
                     workspace=workspace_0,
                 )
 
-            outputs_list.append(outputs)
+            if chunked_used[idx_chunk]:
+                outputs_list.append(outputs)
 
         # ========== Wait for auxiliary stream to complete ==========
         if use_multi_stream:
