@@ -808,6 +808,13 @@ class ConfigurableMoE(MoE):
                 dtype=torch.float32,
                 device=router_logits.device,
             )
+            assert token_selected_experts.shape[1] == self.routing_method.experts_per_token
+            assert token_selected_experts.shape == token_final_scales.shape
+            # CutlassFusedMoE expects float32, while TRTLLMGenFusedMoE uses bfloat16
+            if isinstance(self.backend, CutlassFusedMoE):
+                assert token_final_scales.dtype == torch.float32
+            assert token_selected_experts.dtype == torch.int32
+
             # Convert token_final_scales to bfloat16 if needed (TRTLLMGen backend requires it)
             if token_final_scales is not None and isinstance(self.backend, TRTLLMGenFusedMoE):
                 token_final_scales = token_final_scales.to(torch.bfloat16)
@@ -823,15 +830,32 @@ class ConfigurableMoE(MoE):
             token_selected_experts = None
             token_final_scales = None
 
-        assert not self.layer_load_balancer, (
-            "Current empty tensor doesn't support layer_load_balancer."
-        )
+        # ========== Step 3: EPLB - Update statistics and route ==========
+        # Only executed if backend supports routing separation AND EPLB is enabled
+        if self.layer_load_balancer and token_selected_experts is not None:
+            # TODO<leslie>: this path has not been verified yet
+            self._load_balancer_done_wait_gpu_stage(is_first_call)
+
+            # Update EPLB statistics (method depends on whether using NVLINK two-sided)
+            # Use base class method: ignore_allreduce=True for NVLINK two-sided (uses local stats only)
+            ignore_allreduce = self._is_using_nvlink_two_sided()
+            self._load_balancer_update_statistic(
+                token_selected_experts,
+                is_first_call,
+                is_last_call,
+                ignore_allreduce=ignore_allreduce,
+            )
+
+            # EPLB routing: expert IDs -> slot IDs
+            token_selected_slots = self._load_balancer_route(token_selected_experts, self.use_dp)
+        else:
+            token_selected_slots = token_selected_experts
+
         assert isinstance(self.comm, NVLinkOneSided), (
             "Current empty tensor only support NVLinkOneSided."
         )
 
-        token_selected_slots = token_selected_experts
-
+        # ========== Step 4 & 5: Quantization and Communication Dispatch ==========
         if self.comm is not None:
             supports_post_quant = self.comm.supports_post_quant_dispatch()
             # post_quant_comm = True
