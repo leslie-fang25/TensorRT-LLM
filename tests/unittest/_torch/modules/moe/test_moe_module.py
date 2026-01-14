@@ -30,6 +30,15 @@ from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, c
 from tensorrt_llm._utils import mpi_rank
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo
+from tensorrt_llm._torch.modules.fused_moe.moe_load_balancer import (
+    maybe_create_moe_load_balancer,
+    MoeLoadBalancer,
+)
+from contextlib import nullcontext
+from tensorrt_llm.llmapi.llm_args import MoeLoadBalancerConfig
+from tensorrt_llm._torch.modules.fused_moe.moe_load_balancer import MoeLoadBalancerIterContext
+import copy
+
 
 cloudpickle.register_pickle_by_value(sys.modules[__name__])
 MPI.pickle.__init__(
@@ -202,6 +211,175 @@ def test_moe_multi_gpu(alltoall_method_type, moe_backend, quant_algo):
     ) as executor:
         results = executor.map(
             test_moe_worker,
+            *zip(
+                *[
+                    (
+                        moe_backend,
+                        dtype,
+                        quant_algo,
+                        Mapping(
+                            world_size=world_size,
+                            tp_size=world_size,
+                            moe_ep_size=ep_size,
+                            moe_tp_size=world_size // ep_size,
+                            enable_attention_dp=True,
+                        ),
+                    )
+                ]
+                * world_size
+            ),
+        )
+        for r in results:
+            assert r is None
+
+def test_moe_worker_eplb(moe_backend, dtype, quant_algo, mapping=None):
+    # Hardcode some parameters for testing
+    # activation and weight related
+    seq_len = 4
+    top_k = 2
+    num_experts = 8
+    hidden_size = 512
+    intermediate_size = 512
+
+    # Other parameters
+    finalize_fusion = True
+
+    mapping = mapping or Mapping()
+    mapping.rank = mpi_rank()
+
+    all_rank_num_tokens = [seq_len] * mapping.world_size
+
+    torch.cuda.set_device(mapping.rank)
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+    
+    # with torch.device(f"cuda:{mapping.rank}"):
+
+    # Create route method
+    routing_method = RenormalizeMoeRoutingMethod(top_k=top_k)
+
+    # Create activation and weight
+    with torch.device(f"cuda:{mapping.rank}"):
+        x = torch.randn((seq_len, hidden_size), dtype=dtype, device="cuda")
+        router_logits = torch.randn((seq_len, num_experts), dtype=dtype, device="cuda")
+
+    quantize_util_cls, quant_config, quant_kwargs = get_test_quant_params(quant_algo, x)
+    quantize_util = quantize_util_cls(
+        num_experts=num_experts,
+        dtype=dtype,
+        intermediate_size=intermediate_size,
+        hidden_size=hidden_size,
+        quant_config=quant_config,
+    )
+    weights = quantize_util.create_weights(**quant_kwargs)
+
+    test_eplb = True
+    # test_eplb = False
+
+    # Deepcopy the weight to avoid advise_tensor_pageout in post_load_weights
+    ref_weights = copy.deepcopy(weights) if test_eplb else weights
+
+    # Create pretrained config
+    pretrained_config = PretrainedConfig()
+    pretrained_config.num_experts = num_experts
+    pretrained_config.hidden_size = hidden_size
+    pretrained_config.intermediate_size = intermediate_size
+    pretrained_config.torch_dtype = dtype
+
+    if test_eplb:
+        pretrained_config.architectures = ['GptOssForCausalLM']
+        num_slots = 144
+        layer_updates_per_iter = 2
+        moe_load_balancer_config = MoeLoadBalancerConfig(
+            num_slots=num_slots,
+            layer_updates_per_iter=layer_updates_per_iter,
+        )
+    else:
+        moe_load_balancer_config = None
+
+    model_config = ModelConfig(
+        pretrained_config=pretrained_config,
+        mapping=mapping,
+        quant_config=quant_config,
+        moe_backend=moe_backend,
+        moe_disable_finalize_fusion=not finalize_fusion,
+        moe_load_balancer = moe_load_balancer_config,
+    )
+
+    moe_load_balancer = nullcontext()
+    if test_eplb:
+        moe_load_balancer = maybe_create_moe_load_balancer(
+            model_config, mapping
+        )
+        # moe_load_balancer = MoeLoadBalancer(
+        #     ep_rank=mapping.rank,
+        #     ep_size=mapping.moe_ep_size,
+        #     layer_updates_per_iter=layer_updates_per_iter,
+        # )
+
+    # Create fused MoE module
+    with moe_load_balancer:
+        fused_moe = create_moe(
+            routing_method=routing_method,
+            reduce_results=True,
+            model_config=model_config,
+        )
+
+        fused_moe.load_weights([weights])
+        fused_moe.post_load_weights()
+        fused_moe.cuda(f"cuda:{mapping.rank}")
+
+        if isinstance(moe_load_balancer, MoeLoadBalancer):
+            moe_load_balancer.register_weight_slots_after_to_cuda()
+            moe_load_balancer.finalize_model()
+
+    ref_fused_moe = quantize_util.create_ref_module(routing_method)
+    ref_fused_moe.load_weights([ref_weights])
+    ref_fused_moe.cuda(f"cuda:{mapping.rank}")
+
+    # Evaluate the outputs
+    with torch.inference_mode():
+        ref_output = ref_fused_moe.forward(x, router_logits)
+        if isinstance(moe_load_balancer, MoeLoadBalancer):
+            with MoeLoadBalancerIterContext(moe_load_balancer):
+                output = fused_moe.forward(x, router_logits, all_rank_num_tokens=all_rank_num_tokens)
+        else:
+            output = fused_moe.forward(x, router_logits, all_rank_num_tokens=all_rank_num_tokens)
+
+    print(">>>> rank: {}, ref_output is: {}".format(mapping.rank, ref_output), flush=True)
+    print(">>>> rank: {}, output is: {}".format(mapping.rank, output), flush=True)
+    ref_fused_moe.check_accuracy(output, ref_output)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 4, reason="needs 4 GPUs to run this test")
+def test_moe_multi_gpu_eplb():
+    dtype = torch.bfloat16
+    ep_size = 4
+    world_size = 4
+    alltoall_method_type = "NVLINK_ONE_SIDED"
+    moe_backend = "CUTLASS"
+    quant_algo = None
+
+    if quant_algo == QuantAlgo.NVFP4 and getSMVersion() < 100:
+        pytest.skip("This test is not supported in pre-Blackwell architecture")
+
+    def init_worker(custom_paths, alltoall_method_type):
+        # Update the sys.path to align with main process for submodule import
+        for custom_path in custom_paths:
+            if custom_path.endswith("tests/unittest") and custom_path not in sys.path:
+                sys.path.append(custom_path)
+
+        # Enable configurable moe by default
+        os.environ["ENABLE_CONFIGURABLE_MOE"] = "1"
+
+        # Set comm method
+        os.environ["TRTLLM_FORCE_COMM_METHOD"] = alltoall_method_type
+
+    with MPIPoolExecutor(
+        initializer=init_worker, initargs=(sys.path, alltoall_method_type), max_workers=world_size
+    ) as executor:
+        results = executor.map(
+            test_moe_worker_eplb,
             *zip(
                 *[
                     (

@@ -236,13 +236,13 @@ class BaseQuantizeUtil(ABC):
         weights = {}
         for expert_id in range(self.num_experts):
             w1_weight = torch.randn(
-                (self.intermediate_size, self.hidden_size), dtype=self.dtype, device="cuda"
+                (self.intermediate_size, self.hidden_size), dtype=self.dtype, device="cpu"
             )
             w2_weight = torch.randn(
-                (self.hidden_size, self.intermediate_size), dtype=self.dtype, device="cuda"
+                (self.hidden_size, self.intermediate_size), dtype=self.dtype, device="cpu"
             )
             w3_weight = torch.randn(
-                (self.intermediate_size, self.hidden_size), dtype=self.dtype, device="cuda"
+                (self.intermediate_size, self.hidden_size), dtype=self.dtype, device="cpu"
             )
 
             weights[f"{expert_id}.w1.weight"] = w1_weight
