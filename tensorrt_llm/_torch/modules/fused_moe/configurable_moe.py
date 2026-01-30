@@ -476,8 +476,11 @@ class ConfigurableMoE(MoE):
 
         # Calculate the number of rows
         num_rows = x.shape[0]
-        if self.use_dp:
-            num_rows = sum(all_rank_num_tokens)
+        if self.use_dp and self.comm is not None:
+            # When using communication, dispatch will create tensors with shape:
+            # [ep_size * max_tokens_per_rank, ...] due to padding for balanced distribution
+            # So we need to allocate workspace based on this size
+            num_rows = self.mapping.moe_ep_size * max(all_rank_num_tokens)
 
         workspaces = self.backend.get_workspaces([num_rows])
         return workspaces[0]
@@ -745,20 +748,16 @@ class ConfigurableMoE(MoE):
 
         # Always need at least workspace_0
         chunk_size_0 = (
-            sum(all_rank_num_tokens_list[0])
+            self.mapping.moe_ep_size * max(all_rank_num_tokens_list[0])
             if self.use_dp and all_rank_num_tokens_list[0] is not None
             else chunk_size_list[0]
         )
         workspace_chunk_sizes = [chunk_size_0]
 
         # Add workspace_1 if using multi-stream for alternating between streams
+        # Reuse chunk_size_0 since it's always >= chunk_size_1 (first chunk is largest)
         if use_multi_stream:
-            chunk_size_1 = (
-                sum(all_rank_num_tokens_list[1])
-                if self.use_dp and all_rank_num_tokens_list[1] is not None
-                else chunk_size_list[1]
-            )
-            workspace_chunk_sizes.append(chunk_size_1)
+            workspace_chunk_sizes.append(chunk_size_0)
 
         workspaces = self.backend.get_workspaces(workspace_chunk_sizes)
         workspace_0 = workspaces[0]
