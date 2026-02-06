@@ -66,7 +66,7 @@ def _test_moe_worker(
     seq_len = 4
     top_k = 2
     num_experts = 8
-    hidden_size = 512
+    hidden_size = 2048
     intermediate_size = 512
 
     # Other parameters
@@ -193,6 +193,10 @@ def _test_moe_worker(
                 ].get_old_rank_expert_ids()
 
             ref_output, output = _run_forward(x, router_logits)
+
+            print(">>>> ref_output is: {}".format(ref_output), flush=True)
+            print(">>>> output is: {}".format(output), flush=True)
+
             ref_fused_moe.check_accuracy(output, ref_output)
 
             if enable_eplb:
@@ -221,6 +225,7 @@ def _test_moe_worker(
     [
         None,
         QuantAlgo.FP8,
+        QuantAlgo.FP8_BLOCK_SCALES,
         QuantAlgo.NVFP4,
     ],
     ids=lambda val: f"quant_algo={val}",
@@ -230,6 +235,7 @@ def _test_moe_worker(
     [
         "CUTLASS",
         "TRTLLM",
+        "CUTEDSL"
     ],
     ids=lambda val: f"moe_backend={val}",
 )
@@ -307,6 +313,7 @@ def _test_moe_multi_gpu(
     [
         None,
         QuantAlgo.NVFP4,
+        QuantAlgo.FP8_BLOCK_SCALES,
     ],
     ids=lambda val: f"quant_algo={val}",
 )
@@ -315,6 +322,7 @@ def _test_moe_multi_gpu(
     [
         "CUTLASS",
         "TRTLLM",
+        "CUTEDSL",
     ],
     ids=lambda val: f"moe_backend={val}",
 )
@@ -323,6 +331,7 @@ def _test_moe_multi_gpu(
     [
         "NVLINK_ONE_SIDED",
         "NVLINK_TWO_SIDED",
+        "DEEPEPLOWLATENCY",
     ],
     ids=lambda val: f"comm_method_type={val}",
 )
