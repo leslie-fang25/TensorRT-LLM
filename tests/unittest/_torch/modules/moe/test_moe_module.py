@@ -973,7 +973,7 @@ BASE_TEST_PARAMS = generate_base_test_params(
 )
 
 
-@pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
+# @pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
 @pytest.mark.parametrize(
     "dtype,moe_backend,quant_algo,seq_len,model_config,routing_method_cls,"
     "swiglu_alpha,swiglu_beta,swiglu_limit",
