@@ -246,11 +246,11 @@ def should_skip_trtllm(
 
     # Issue: W4A8_MXFP4_MXFP8 has accuracy issues on certain model configs
     if quant_algo == QuantAlgo.W4A8_MXFP4_MXFP8:
-        if intermediate_size >= 14336:
-            return (
-                f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with large "
-                f"intermediate_size has accuracy issues (intermediate_size={intermediate_size} >= 14336)."
-            )
+        # if intermediate_size >= 14336:
+        #     return (
+        #         f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with large "
+        #         f"intermediate_size has accuracy issues (intermediate_size={intermediate_size} >= 14336)."
+        #     )
         if num_experts >= 60 and intermediate_size >= 1408:
             return (
                 f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with many experts "
