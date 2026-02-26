@@ -251,11 +251,11 @@ def should_skip_trtllm(
         #         f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with large "
         #         f"intermediate_size has accuracy issues (intermediate_size={intermediate_size} >= 14336)."
         #     )
-        if num_experts >= 60 and intermediate_size >= 1408:
-            return (
-                f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with many experts "
-                f"has accuracy issues (num_experts={num_experts} >= 60)."
-            )
+        # if num_experts >= 60 and intermediate_size >= 1408:
+        #     return (
+        #         f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with many experts "
+        #         f"has accuracy issues (num_experts={num_experts} >= 60)."
+        #     )
         # Issue: W4A8_MXFP4_MXFP8 with swiglu_gptoss_style and top_k=1 has accuracy
         # issues on TRTLLM backend. Observed mismatch ~20-22% exceeds the 20% threshold.
         # CUTLASS backend with the same configuration passes.
