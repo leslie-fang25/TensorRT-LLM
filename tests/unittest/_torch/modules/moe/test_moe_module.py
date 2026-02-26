@@ -722,6 +722,8 @@ LOCAL_MOE_MODEL_CONFIGS = CI_MOE_MODEL_CONFIGS + [
     # === Boundary Tests: small sizes ===
     MoeModelConfig(4, 2, 64, 128),  # very small hidden_size
     MoeModelConfig(4, 2, 128, 64),  # intermediate < hidden
+    # === Boundary Tests: large intermediate_size ===
+    MoeModelConfig(4, 2, 7168, 14336),  # large intermediate_size
 ]
 
 MOE_MODEL_CONFIGS = (
