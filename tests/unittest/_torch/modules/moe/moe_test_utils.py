@@ -259,12 +259,13 @@ def should_skip_trtllm(
         # Issue: W4A8_MXFP4_MXFP8 with swiglu_gptoss_style and top_k=1 has accuracy
         # issues on TRTLLM backend. Observed mismatch ~20-22% exceeds the 20% threshold.
         # CUTLASS backend with the same configuration passes.
-        if swiglu_gptoss_style and top_k == 1:
-            return (
-                f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with "
-                f"swiglu_gptoss_style and top_k={top_k} has accuracy issues "
-                f"(mismatch ~20-22%). CUTLASS backend with the same config passes."
-            )
+        # if swiglu_gptoss_style and top_k == 1:
+        #     return (
+        #         f"[Potential Bug] TRTLLMGenFusedMoE W4A8_MXFP4_MXFP8 with "
+        #         f"swiglu_gptoss_style and top_k={top_k} has accuracy issues "
+        #         f"(mismatch ~20-22%). CUTLASS backend with the same config passes."
+        #     )
+        pass
 
     # Issue: Certain TRTLLM kernel runners crash with CUDA errors in multi-GPU
     # DeepEP mode. the crash is specific to EP with DeepEP.
