@@ -1042,7 +1042,7 @@ MULTI_GPU_TEST_PARAMS = generate_multi_gpu_test_params(
 )
 
 
-@pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
+# @pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
 @pytest.mark.skipif(torch.cuda.device_count() < 4, reason="needs 4 GPUs to run this test")
 @pytest.mark.parametrize(
     "parallel_mode,comm_method_type,dtype,moe_backend,quant_algo,seq_len,model_config,"

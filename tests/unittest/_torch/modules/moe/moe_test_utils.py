@@ -275,9 +275,9 @@ def should_skip_trtllm(
     #   - W4A8_MXFP4_MXFP8:  likely crash (same mxe2m1 kernel family as W4A16_MXFP4)
     if comm_method in ("DEEPEP", "DEEPEPLOWLATENCY"):
         deepep_crash_quant_algos = {
-            QuantAlgo.FP8_BLOCK_SCALES,
-            QuantAlgo.W4A16_MXFP4,
-            QuantAlgo.W4A8_MXFP4_MXFP8,
+            # QuantAlgo.FP8_BLOCK_SCALES,
+            # QuantAlgo.W4A16_MXFP4,
+            # QuantAlgo.W4A8_MXFP4_MXFP8,
         }
         if quant_algo in deepep_crash_quant_algos:
             return (
