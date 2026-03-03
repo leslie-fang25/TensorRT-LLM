@@ -381,7 +381,7 @@ TEST_PARAMS = generate_test_params()
 # - 128-alignment requirements for quantization
 #
 # =============================================================================
-@pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
+# @pytest.mark.skip(reason="Temporarily skipped due to the long time to run the test")
 @pytest.mark.parametrize(
     "dtype_activation,backend_type,quant_algo,seq_len,model_config,"
     "routing_method_cls,swiglu_alpha,swiglu_beta,swiglu_limit",
