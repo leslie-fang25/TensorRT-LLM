@@ -551,6 +551,12 @@ class TRTLLMGenFusedMoE(MoE):
             if x_sf is None:
                 x, x_sf = torch.ops.trtllm.fp8_quantize_1x128(x)
 
+            # Derive intermediate_size from the (possibly padded) weight shape
+            # so the kernel sees a multiple-of-128 value even when the original
+            # intermediate_size / tp_size is not aligned.
+            intermediate_size_per_partition_padded = (
+                self.w3_w1_weight.shape[1] // 2)
+
             result = torch.ops.trtllm.fp8_block_scale_moe_runner(
                 router_logits,
                 routing_bias,
@@ -564,7 +570,7 @@ class TRTLLMGenFusedMoE(MoE):
                 top_k,
                 n_group,
                 topk_group,
-                self.intermediate_size_per_partition,
+                intermediate_size_per_partition_padded,
                 self.slot_start,
                 self.expert_size_per_partition,
                 routed_scaling_factor,

@@ -912,30 +912,41 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
     def create_weights(self, module: torch.nn.Module):
         weight_dtype = torch.float8_e4m3fn
 
+        cell_div = lambda x, y: (x + y - 1) // y
+
+        # Pad intermediate_size_per_partition to a multiple of 128 so that
+        # the C++ fp8_block_scale_moe_runner kernel (which requires
+        # intermediate_size % 128 == 0) works for any intermediate_size /
+        # tp_size combination.  Padding from the global intermediate_size
+        # avoids ceil-division mismatches between scale-buffer allocation
+        # and per-rank scale sharding.
+        padded_intermediate_size_per_partition = (
+            cell_div(module.intermediate_size, 128 * module.tp_size) * 128)
+
         w3_w1_weight_shape = (module.expert_size_per_partition,
-                              module.intermediate_size_per_partition * 2,
+                              padded_intermediate_size_per_partition * 2,
                               module.hidden_size)
         w2_weight_shape = (
             module.expert_size_per_partition,
             module.hidden_size,
-            module.intermediate_size_per_partition,
+            padded_intermediate_size_per_partition,
         )
         super().create_weights(module, weight_dtype, w3_w1_weight_shape,
                                w2_weight_shape)
 
-        cell_div = lambda x, y: (x + y - 1) // y
-        w3_w1_weight_scaling_factor = nn.Parameter(torch.empty(
+        w3_w1_weight_scaling_factor = nn.Parameter(torch.zeros(
             (module.expert_size_per_partition,
-             cell_div(module.intermediate_size_per_partition, 128) * 2,
-             cell_div(w3_w1_weight_shape[2], 128)),
+             padded_intermediate_size_per_partition // 128 * 2,
+             cell_div(module.hidden_size, 128)),
             dtype=torch.float32),
                                                    requires_grad=False)
         module.register_parameter("w3_w1_weight_scaling_factor",
                                   w3_w1_weight_scaling_factor)
 
-        w2_weight_scaling_factor = nn.Parameter(torch.empty(
+        w2_weight_scaling_factor = nn.Parameter(torch.zeros(
             (module.expert_size_per_partition, cell_div(
-                w2_weight_shape[1], 128), cell_div(w2_weight_shape[2], 128)),
+                module.hidden_size,
+                128), padded_intermediate_size_per_partition // 128),
             dtype=torch.float32),
                                                 requires_grad=False)
         module.register_parameter("w2_weight_scaling_factor",
@@ -944,6 +955,63 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
         self._online_eplb_not_verified(module)
 
         self.setup_quant_scales(module)
+
+    def load_expert_w3_w1_weight(self,
+                                 module: torch.nn.Module,
+                                 w1_weight: torch.Tensor,
+                                 w3_weight: torch.Tensor,
+                                 dst_w3_w1_weight: torch.Tensor,
+                                 allow_partial_loading: bool = False):
+        """Override to pad weight shards when intermediate_size_per_partition
+        is padded to a multiple of 128."""
+        device = dst_w3_w1_weight.device
+        if not allow_partial_loading:
+            assert w1_weight is not None and w3_weight is not None
+        w1_weight_shard = load_weight_shard(
+            w1_weight,
+            module.tp_size,
+            module.tp_rank,
+            TensorParallelMode.COLUMN,
+            device=device) if w1_weight is not None else None
+        w3_weight_shard = load_weight_shard(
+            w3_weight,
+            module.tp_size,
+            module.tp_rank,
+            TensorParallelMode.COLUMN,
+            device=device) if w3_weight is not None else None
+
+        dst_w3_weight, dst_w1_weight = dst_w3_w1_weight.chunk(2, dim=0)
+        if w1_weight_shard is not None and w1_weight_shard.shape[0] != 0:
+            w1_viewed = w1_weight_shard.contiguous().view(
+                dst_w3_w1_weight.dtype)
+            w1_viewed = _pad_tensor_to_shape(w1_viewed, dst_w1_weight.shape)
+            dst_w1_weight.copy_(w1_viewed, non_blocking=True)
+        if w3_weight_shard is not None and w3_weight_shard.shape[0] != 0:
+            w3_viewed = w3_weight_shard.contiguous().view(
+                dst_w3_w1_weight.dtype)
+            w3_viewed = _pad_tensor_to_shape(w3_viewed, dst_w3_weight.shape)
+            dst_w3_weight.copy_(w3_viewed, non_blocking=True)
+
+    def load_expert_w2_weight(self,
+                              module: torch.nn.Module,
+                              w2_weight: torch.Tensor,
+                              dst_w2_weight: torch.Tensor,
+                              allow_partial_loading: bool = False):
+        """Override to pad weight shards when intermediate_size_per_partition
+        is padded to a multiple of 128."""
+        device = dst_w2_weight.device
+        if not allow_partial_loading:
+            assert w2_weight is not None
+        w2_weight_shard = load_weight_shard(
+            w2_weight,
+            module.tp_size,
+            module.tp_rank,
+            TensorParallelMode.ROW,
+            device=device) if w2_weight is not None else None
+        if w2_weight_shard is not None:
+            w2_viewed = w2_weight_shard.view(dst_w2_weight.dtype)
+            w2_viewed = _pad_tensor_to_shape(w2_viewed, dst_w2_weight.shape)
+            dst_w2_weight.copy_(w2_viewed, non_blocking=True)
 
     def load_weights(self,
                      module: torch.nn.Module,
@@ -976,6 +1044,9 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
                                                       module.tp_rank,
                                                       TensorParallelMode.COLUMN,
                                                       device=device)
+                w3_w1_scale_shard = _pad_tensor_to_shape(
+                    w3_w1_scale_shard,
+                    dst_w3_w1_weight_scale[local_slot_id].shape)
                 dst_w3_w1_weight_scale[local_slot_id].copy_(w3_w1_scale_shard)
             elif module.weight_loading_mode == MoEWeightLoadingMode.VANILLA:
                 w3_scale = weights[
@@ -993,6 +1064,8 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
                         module.tp_rank,
                         TensorParallelMode.COLUMN,
                         device=device)
+                    w1_scale_shard = _pad_tensor_to_shape(
+                        w1_scale_shard, dst_w1_weight_scale.shape)
                     dst_w1_weight_scale.copy_(w1_scale_shard)
                 if w3_scale is not None:
                     w3_scale_shard = load_weight_shard(
@@ -1001,6 +1074,8 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
                         module.tp_rank,
                         TensorParallelMode.COLUMN,
                         device=device)
+                    w3_scale_shard = _pad_tensor_to_shape(
+                        w3_scale_shard, dst_w3_weight_scale.shape)
                     dst_w3_weight_scale.copy_(w3_scale_shard)
             else:
                 raise NotImplementedError(
@@ -1012,6 +1087,8 @@ class DeepSeekFP8BlockScalesFusedMoEMethod(FusedMoEMethodBase):
                                                    module.tp_rank,
                                                    TensorParallelMode.ROW,
                                                    device=device)
+                w2_scale_shard = _pad_tensor_to_shape(
+                    w2_scale_shard, dst_w2_weight_scale[local_slot_id].shape)
                 dst_w2_weight_scale[local_slot_id].copy_(w2_scale_shard)
 
     def load_quant_scales(self, module: torch.nn.Module, weights: Dict):
