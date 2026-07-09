@@ -75,7 +75,9 @@ l0_b300:
   tests:
   # ---- moved to post-merge (MoE CI optimization) ----
   - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "CUTLASS"
-  - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "TRTLLM and not None"
+  - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "TRTLLM and not None and not e128"
   - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "TRTLLM and None"
+  - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "TRTLLM and e128 and not alpha"
+  - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "TRTLLM and e128 and alpha"
   - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "CUTEDSL"
   - unittest/_torch/modules/moe/test_moe_backend.py::test_moe_backend -k "DEEPGEMM"
