@@ -37,6 +37,7 @@ class MoeBackendType(str, Enum):
     CUTLASS = "CUTLASS"
     TRTLLM = "TRTLLM"
     CUTEDSL = "CUTEDSL"
+    CUTEDSL_FC12 = "CUTEDSL_FC12"
     DEEPGEMM = "DEEPGEMM"
     DENSEGEMM = "DENSEGEMM"
     MEGAMOE_DEEPGEMM = "MEGAMOE_DEEPGEMM"
@@ -118,6 +119,10 @@ def get_backend_class(backend_type: MoeBackendType):
         from tensorrt_llm._torch.moe.fused_moe.fused_moe_cute_dsl import CuteDslFusedMoE
 
         return CuteDslFusedMoE
+    if backend_type == MoeBackendType.CUTEDSL_FC12:
+        from tensorrt_llm._torch.moe.fused_moe.fused_moe_cute_dsl_fc12 import CuteDslFc12FusedMoE
+
+        return CuteDslFc12FusedMoE
     if backend_type == MoeBackendType.DEEPGEMM:
         from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 

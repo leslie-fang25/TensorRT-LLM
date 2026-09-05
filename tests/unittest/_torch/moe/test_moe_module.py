@@ -960,6 +960,11 @@ BACKEND_TYPES = [
     MoeBackendType.MARLIN,
 ]
 
+# Optional CuteDslFc12 (FC1+FC2 fused) backend. Gated by an env var so the
+# default backend matrix is unchanged; set TRTLLM_TEST_MOE_FC12=1 to add it.
+if os.environ.get("TRTLLM_TEST_MOE_FC12") == "1":
+    BACKEND_TYPES.append(MoeBackendType.CUTEDSL_FC12)
+
 # Data types to test
 DTYPES = [
     torch.float16,
@@ -992,6 +997,14 @@ LOCAL_MOE_MODEL_CONFIGS = CI_MOE_MODEL_CONFIGS + [
 ]
 
 MOE_MODEL_CONFIGS = CI_MOE_MODEL_CONFIGS if IS_CI_MODE else LOCAL_MOE_MODEL_CONFIGS
+
+# Optional DeepSeek-V4-Pro routed-MoE shape (n_routed_experts=384, top_k=6,
+# hidden_size=7168, moe_intermediate_size=3072). Gated by an env var so the
+# default test matrix is unchanged; set TRTLLM_TEST_MOE_DSV4PRO_SHAPE=1 to add it.
+if os.environ.get("TRTLLM_TEST_MOE_DSV4PRO_SHAPE") == "1":
+    MOE_MODEL_CONFIGS = MOE_MODEL_CONFIGS + [
+        MoeModelConfig(384, 6, 7168, 3072),  # DeepSeek-V4-Pro
+    ]
 
 # Sequence lengths to test
 SEQ_LENS = [1, 8]

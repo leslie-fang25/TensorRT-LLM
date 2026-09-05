@@ -3965,7 +3965,8 @@ def _deepseekv4_pro_agg_llm_kwargs(**overrides):
     kwargs = dict(
         tensor_parallel_size=8,
         moe_expert_parallel_size=8,
-        moe_config=MoeConfig(backend="TRTLLM"),
+        moe_config=MoeConfig(
+            backend=os.environ.get("DSV4_DIAG_MOE_BACKEND", "TRTLLM")),
         enable_attention_dp=True,
         max_seq_len=4096,
         max_batch_size=16,
@@ -4184,7 +4185,8 @@ _DEEPSEEK_V4_GSM8K_SYSTEM_PROMPT = (
 @skip_pre_blackwell
 class TestDeepSeekV4Pro(LlmapiAccuracyTestHarness):
     MODEL_NAME = "deepseek-ai/DeepSeek-V4-Pro"
-    MODEL_PATH = f"{llm_models_root()}/DeepSeek-V4-Pro"
+    MODEL_PATH = os.environ.get("DSV4_DIAG_MODEL_PATH",
+                                f"{llm_models_root()}/DeepSeek-V4-Pro")
     EXTRA_EVALUATOR_KWARGS = dict(
         apply_chat_template=True,
         system_prompt=_DEEPSEEK_V4_GSM8K_SYSTEM_PROMPT,
@@ -4213,7 +4215,8 @@ class TestDeepSeekV4Pro(LlmapiAccuracyTestHarness):
 @skip_pre_blackwell
 class TestDeepSeekV4ProDSpark(LlmapiAccuracyTestHarness):
     MODEL_NAME = "deepseek-ai/DeepSeek-V4-Pro"
-    MODEL_PATH = f"{llm_models_root()}/DeepSeek-V4-Pro-DSpark"
+    MODEL_PATH = os.environ.get("DSV4_DIAG_MODEL_PATH",
+                                f"{llm_models_root()}/DeepSeek-V4-Pro-DSpark")
     EXTRA_EVALUATOR_KWARGS = dict(
         apply_chat_template=True,
         system_prompt=_DEEPSEEK_V4_GSM8K_SYSTEM_PROMPT,
@@ -4230,7 +4233,8 @@ class TestDeepSeekV4ProDSpark(LlmapiAccuracyTestHarness):
                  tensor_parallel_size=8,
                  moe_expert_parallel_size=8,
                  enable_attention_dp=True,
-                 moe_config=MoeConfig(backend="MEGAMOE_DEEPGEMM"),
+                 moe_config=MoeConfig(
+                     backend=os.environ.get("DSV4_DIAG_MOE_BACKEND", "MEGAMOE_DEEPGEMM")),
                  max_batch_size=DEEPSEEKV4_TEST_MAX_BATCH_SIZE,
                  max_seq_len=4096,
                  max_num_tokens=4096,
