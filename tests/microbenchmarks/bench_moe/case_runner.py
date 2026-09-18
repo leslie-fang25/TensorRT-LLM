@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -885,6 +886,17 @@ def _run_one_candidate(
                 moe.destroy()
             except Exception:
                 pass
+            # ConfigurableMoE and its MoEScheduler reference each other
+            # (``moe.scheduler`` <-> ``scheduler.moe``), so dropping the last
+            # name does not free the module: it lingers until the cyclic
+            # garbage collector runs, and nothing in this loop allocates enough
+            # Python objects to trigger one. Each lingering module keeps its
+            # expert weights on the device (~3 GiB per candidate for
+            # deepseek_v4_pro W4A8 ws4), so a sweep accumulated modules until it
+            # ran out of memory. Collect explicitly so the weights are released
+            # before the next candidate builds its own module.
+            moe = None
+            gc.collect()
         if prev_force_comm is None:
             os.environ.pop("TRTLLM_FORCE_COMM_METHOD", None)
         else:
