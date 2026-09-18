@@ -195,19 +195,28 @@ def allreduce_poison_reason(local_reason: Optional[str]) -> Optional[str]:
     return "; ".join(f"rank{rank}={reason}" for rank, reason in bad)
 
 
+_MOE_MODULE_TYPES = ("ConfigurableMoE", "CutlassFusedMoE", "TRTLLMGenFusedMoE",
+                     "MegaMoEDeepGemm", "MegaMoECuteDsl")
+
+
 class _MemTrace:
     """Per-candidate GPU memory trace, enabled with BENCH_MOE_MEM_TRACE=1.
 
     After every candidate prints allocated / reserved / free device memory, the
-    number of live ``ConfigurableMoE`` objects and the total bytes of live CUDA
-    tensors reachable from the GC. With BENCH_MOE_MEM_TRACE_REFERRERS=1 it also
-    names the referrers of the largest CUDA tensors that appeared since the
-    previous candidate whenever allocated memory grew by more than 256 MiB.
+    number of live MoE module objects and the total bytes of live CUDA tensors
+    reachable from the GC — measured WITHOUT collecting first, so reference
+    cycles that keep a finished candidate's module alive show up as
+    ``live_moe_modules>0``. With BENCH_MOE_MEM_TRACE_REFERRERS=1 it names the
+    referrers of such modules and of the largest CUDA tensors that appeared
+    since the previous candidate when memory grew by more than 256 MiB. With
+    BENCH_MOE_MEM_TRACE_GC=1 it then runs ``gc.collect()`` and reports how much
+    that freed (a cycle shows as a large drop).
     """
 
     def __init__(self) -> None:
         self.enabled = os.environ.get("BENCH_MOE_MEM_TRACE", "0") == "1"
         self.referrers = os.environ.get("BENCH_MOE_MEM_TRACE_REFERRERS", "0") == "1"
+        self.collect = os.environ.get("BENCH_MOE_MEM_TRACE_GC", "0") == "1"
         self._prev_alloc = 0
         self._prev_used = 0
         self._prev_ids: set[int] = set()
@@ -229,17 +238,13 @@ class _MemTrace:
     def report(self, idx: int, rank: int, label: str) -> None:
         if not self.enabled:
             return
-        gc.collect()
         torch.cuda.synchronize()
         alloc = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
         free, total = torch.cuda.mem_get_info()
         tensors = self._cuda_tensors()
         live_bytes = sum(t.numel() * t.element_size() for t in tensors)
-        live_moe = sum(
-            1 for o in gc.get_objects()
-            if type(o).__name__ in ("ConfigurableMoE", "CutlassFusedMoE", "TRTLLMGenFusedMoE",
-                                    "MegaMoEDeepGemm", "MegaMoECuteDsl"))
+        moes = [o for o in gc.get_objects() if type(o).__name__ in _MOE_MODULE_TYPES]
         delta = alloc - self._prev_alloc
         # Device memory outside the caching allocator (symmetric memory, NVSHMEM,
         # C++ cudaMalloc) only shows up here.
@@ -250,7 +255,33 @@ class _MemTrace:
             f"(+{self._gib(delta)}) reserved={self._gib(reserved)}GiB "
             f"used={self._gib(used)}GiB (+{self._gib(used_delta)}) free={self._gib(free)}GiB "
             f"live_cuda_tensors={len(tensors)} live_tensor_bytes={self._gib(live_bytes)}GiB "
-            f"live_moe_modules={live_moe} after={label}\n")
+            f"live_moe_modules={len(moes)} gc_counts={gc.get_count()} after={label}\n")
+        if self.referrers and moes:
+            # Who keeps a finished candidate's module alive (cycle members or a cache).
+            for m in moes[:3]:
+                refs = []
+                for r in gc.get_referrers(m):
+                    if r is moes:
+                        continue
+                    name = type(r).__name__
+                    if isinstance(r, dict):
+                        keys = [str(k) for k, v in r.items() if v is m][:2]
+                        owners = [type(rr).__name__ for rr in gc.get_referrers(r)
+                                  if not isinstance(rr, (list, dict, tuple))][:3]
+                        name = f"dict[{','.join(keys)}]<-{'/'.join(owners) or '?'}"
+                    refs.append(name)
+                sys.stderr.write(
+                    f"[bench_moe memtrace]   live module {type(m).__name__} "
+                    f"referrers={refs[:8]}\n")
+        if self.collect:
+            unreachable = gc.collect()
+            torch.cuda.synchronize()
+            alloc_after = torch.cuda.memory_allocated()
+            free_after, _ = torch.cuda.mem_get_info()
+            sys.stderr.write(
+                f"[bench_moe memtrace]   gc.collect: unreachable={unreachable} "
+                f"alloc {self._gib(alloc)}->{self._gib(alloc_after)}GiB "
+                f"free {self._gib(free)}->{self._gib(free_after)}GiB\n")
         if self.referrers and max(delta, used_delta) > (256 << 20):
             new = [t for t in tensors if id(t) not in self._prev_ids]
             new.sort(key=lambda t: t.numel() * t.element_size(), reverse=True)
