@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import gc
 import importlib
 import json
 import os
@@ -192,6 +193,82 @@ def allreduce_poison_reason(local_reason: Optional[str]) -> Optional[str]:
     if not bad:
         return None
     return "; ".join(f"rank{rank}={reason}" for rank, reason in bad)
+
+
+class _MemTrace:
+    """Per-candidate GPU memory trace, enabled with BENCH_MOE_MEM_TRACE=1.
+
+    After every candidate prints allocated / reserved / free device memory, the
+    number of live ``ConfigurableMoE`` objects and the total bytes of live CUDA
+    tensors reachable from the GC. With BENCH_MOE_MEM_TRACE_REFERRERS=1 it also
+    names the referrers of the largest CUDA tensors that appeared since the
+    previous candidate whenever allocated memory grew by more than 256 MiB.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = os.environ.get("BENCH_MOE_MEM_TRACE", "0") == "1"
+        self.referrers = os.environ.get("BENCH_MOE_MEM_TRACE_REFERRERS", "0") == "1"
+        self._prev_alloc = 0
+        self._prev_ids: set[int] = set()
+
+    @staticmethod
+    def _gib(n: float) -> str:
+        return f"{n / (1 << 30):.2f}"
+
+    def _cuda_tensors(self) -> List[torch.Tensor]:
+        out = []
+        for obj in gc.get_objects():
+            try:
+                if isinstance(obj, torch.Tensor) and obj.is_cuda:
+                    out.append(obj)
+            except Exception:  # objects whose attribute access itself raises
+                continue
+        return out
+
+    def report(self, idx: int, rank: int, label: str) -> None:
+        if not self.enabled:
+            return
+        gc.collect()
+        torch.cuda.synchronize()
+        alloc = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        free, total = torch.cuda.mem_get_info()
+        tensors = self._cuda_tensors()
+        live_bytes = sum(t.numel() * t.element_size() for t in tensors)
+        live_moe = sum(
+            1 for o in gc.get_objects()
+            if type(o).__name__ in ("ConfigurableMoE", "CutlassFusedMoE", "TRTLLMGenFusedMoE",
+                                    "MegaMoEDeepGemm", "MegaMoECuteDsl"))
+        delta = alloc - self._prev_alloc
+        sys.stderr.write(
+            f"[bench_moe memtrace] idx={idx} rank={rank} alloc={self._gib(alloc)}GiB "
+            f"(+{self._gib(delta)}) reserved={self._gib(reserved)}GiB free={self._gib(free)}GiB "
+            f"live_cuda_tensors={len(tensors)} live_tensor_bytes={self._gib(live_bytes)}GiB "
+            f"live_moe_modules={live_moe} after={label}\n")
+        if self.referrers and delta > (256 << 20):
+            new = [t for t in tensors if id(t) not in self._prev_ids]
+            new.sort(key=lambda t: t.numel() * t.element_size(), reverse=True)
+            for t in new[:5]:
+                refs = []
+                for r in gc.get_referrers(t):
+                    name = type(r).__name__
+                    if name in ("frame", "list"):
+                        # A list is usually a parameter/buffer container; say whose.
+                        owners = [type(rr).__name__ for rr in gc.get_referrers(r)
+                                  if not isinstance(rr, (list, dict, tuple))][:3]
+                        name = f"{name}<-{'/'.join(owners) or '?'}"
+                    elif isinstance(r, dict):
+                        keys = [str(k) for k, v in r.items() if v is t][:2]
+                        owners = [type(rr).__name__ for rr in gc.get_referrers(r)
+                                  if not isinstance(rr, (list, dict, tuple))][:3]
+                        name = f"dict[{','.join(keys)}]<-{'/'.join(owners) or '?'}"
+                    refs.append(name)
+                sys.stderr.write(
+                    f"[bench_moe memtrace]   new tensor {tuple(t.shape)} {t.dtype} "
+                    f"{self._gib(t.numel() * t.element_size())}GiB referrers={refs[:6]}\n")
+        sys.stderr.flush()
+        self._prev_alloc = alloc
+        self._prev_ids = {id(t) for t in tensors}
 
 
 class CandidateWatchdog:
@@ -527,6 +604,7 @@ def _run_benchmark_worker_under_current_mpi(args: argparse.Namespace, launcher: 
     # produced this run. ``_build_report_payload`` consumes this directly.
     accumulated_rows: List[Dict[str, Any]] = list(resumed_rows)
     input_cache: _InputCache = {}
+    mem_trace = _MemTrace()
 
     checkpoint_every = max(0, int(getattr(args, "checkpoint_every", 1) or 0))
     candidates_since_checkpoint = 0
@@ -649,6 +727,7 @@ def _run_benchmark_worker_under_current_mpi(args: argparse.Namespace, launcher: 
         accumulated_rows[-1] = row
         if rank == 0:
             print(json.dumps(row, indent=2), flush=True)
+        mem_trace.report(idx, rank, case_label)
 
         # Sticky CUDA error detection + lockstep exit across all ranks.
         local_poison = cuda_poison_self_check()
