@@ -209,6 +209,7 @@ class _MemTrace:
         self.enabled = os.environ.get("BENCH_MOE_MEM_TRACE", "0") == "1"
         self.referrers = os.environ.get("BENCH_MOE_MEM_TRACE_REFERRERS", "0") == "1"
         self._prev_alloc = 0
+        self._prev_used = 0
         self._prev_ids: set[int] = set()
 
     @staticmethod
@@ -240,12 +241,17 @@ class _MemTrace:
             if type(o).__name__ in ("ConfigurableMoE", "CutlassFusedMoE", "TRTLLMGenFusedMoE",
                                     "MegaMoEDeepGemm", "MegaMoECuteDsl"))
         delta = alloc - self._prev_alloc
+        # Device memory outside the caching allocator (symmetric memory, NVSHMEM,
+        # C++ cudaMalloc) only shows up here.
+        used = total - free
+        used_delta = used - self._prev_used
         sys.stderr.write(
             f"[bench_moe memtrace] idx={idx} rank={rank} alloc={self._gib(alloc)}GiB "
-            f"(+{self._gib(delta)}) reserved={self._gib(reserved)}GiB free={self._gib(free)}GiB "
+            f"(+{self._gib(delta)}) reserved={self._gib(reserved)}GiB "
+            f"used={self._gib(used)}GiB (+{self._gib(used_delta)}) free={self._gib(free)}GiB "
             f"live_cuda_tensors={len(tensors)} live_tensor_bytes={self._gib(live_bytes)}GiB "
             f"live_moe_modules={live_moe} after={label}\n")
-        if self.referrers and delta > (256 << 20):
+        if self.referrers and max(delta, used_delta) > (256 << 20):
             new = [t for t in tensors if id(t) not in self._prev_ids]
             new.sort(key=lambda t: t.numel() * t.element_size(), reverse=True)
             for t in new[:5]:
@@ -268,6 +274,7 @@ class _MemTrace:
                     f"{self._gib(t.numel() * t.element_size())}GiB referrers={refs[:6]}\n")
         sys.stderr.flush()
         self._prev_alloc = alloc
+        self._prev_used = used
         self._prev_ids = {id(t) for t in tensors}
 
 
