@@ -49,6 +49,12 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.models.modeling_utils import QuantConfig
 
 from .activation import install_activation_params
+from .balanced_workspace import (
+    BALANCED_WORKSPACE_ENV,
+    balanced_assignment_capacity,
+    balanced_workspace_enabled,
+    validate_balanced_workspace,
+)
 from .communication import AllGatherReduceScatter, Communication, CommunicationFactory
 from .moe_scheduler import MoEScheduler, create_moe_scheduler
 
@@ -705,6 +711,34 @@ class ConfigurableMoE(MoE):
         else:
             output_dtype = x.dtype
 
+        if getattr(self, "_enable_balanced_workspace", False):
+            validate_balanced_workspace(self)
+            if (
+                not do_finalize
+                or output_dtype != torch.bfloat16
+                or lora_params is not None
+                or routing_aux is not None
+                or torch.compiler.is_compiling()
+                or torch.cuda.is_current_stream_capturing()
+            ):
+                raise NotImplementedError(
+                    f"{BALANCED_WORKSPACE_ENV}=1 requires eager BF16 finalized execution "
+                    "without LoRA or routing auxiliary data"
+                )
+            if router_logits is not self._maybe_get_perfect_router_logits(router_logits):
+                raise ValueError(
+                    f"{BALANCED_WORKSPACE_ENV}=1 requires the generated perfect-router logits"
+                )
+            if all_rank_num_tokens is None or any(n != x.shape[0] for n in all_rank_num_tokens):
+                raise NotImplementedError(
+                    f"{BALANCED_WORKSPACE_ENV}=1 requires equal, unpadded sender batches"
+                )
+            balanced_assignment_capacity(
+                all_rank_num_tokens, self.routing_method.top_k, self.ep_size
+            )
+            if self.calculate_num_chunks(all_rank_num_tokens) != 1:
+                raise NotImplementedError(f"{BALANCED_WORKSPACE_ENV}=1 requires single-pass MoE")
+
         # DWDP: wait for prefetch to complete and swap backend weight param.data
         # to the composite (full-experts) tensor. Per-layer, not per-chunk —
         # owned at the wrapper so the scheduler does not run it twice (e.g.
@@ -766,6 +800,9 @@ class ConfigurableMoE(MoE):
         """
         if backend is None:
             raise ValueError("Backend cannot be None")
+
+        if balanced_workspace_enabled():
+            validate_balanced_workspace(self)
 
         if self._using_load_balancer() and not backend._supports_load_balancer():
             raise ValueError(

@@ -463,8 +463,15 @@ class MoE(MoEExecutionContractMixin, MoEWeightOwnerMixin,
         return self.dtype if self.dtype is not None else torch.float32
 
     def _init_perfect_router(self):
+        from .balanced_workspace import balanced_workspace_enabled
+
+        self._enable_balanced_workspace = balanced_workspace_enabled()
         self._enable_perfect_router = os.environ.get("ENABLE_PERFECT_ROUTER",
                                                      "0") == "1"
+        if self._enable_balanced_workspace and not self._enable_perfect_router:
+            raise ValueError(
+                "TRTLLM_MOE_ENABLE_BALANCED_WORKSPACE=1 requires ENABLE_PERFECT_ROUTER=1"
+            )
         if not self._enable_perfect_router:
             return
 

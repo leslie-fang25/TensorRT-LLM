@@ -287,7 +287,11 @@ def fused_moe(
     gated_slot_lora_weight_ptrs: Optional[torch.Tensor] = None,
     token_to_slot: Optional[torch.Tensor] = None,
     swiglu_clamp_after_silu: bool = False,
+    local_assignment_capacity: int = -1,
 ) -> List[torch.Tensor]:
+    if local_assignment_capacity >= 0 and min_latency_mode:
+        raise NotImplementedError(
+            "Balanced workspace does not support min-latency MoE")
     tuner = AutoTuner.get()
     # Only the non-alltoall case is considered for profiling in the warmup phase.
     # Therefore, to get the correct tactics during the actual inference, the inputs to the tuner should be the same as when not using alltoall.
@@ -388,6 +392,8 @@ def fused_moe(
             gated_slot_lora_ranks, gated_slot_lora_weight_ptrs, token_to_slot
         ]
     run_moe_args.append(swiglu_clamp_after_silu)
+    if not min_latency_mode:
+        run_moe_args.append(local_assignment_capacity)
     try:
         output = run_moe(*run_moe_args)
     except RuntimeError as e:
@@ -462,7 +468,8 @@ def _(input: torch.Tensor,
       gated_slot_lora_ranks: Optional[torch.Tensor] = None,
       gated_slot_lora_weight_ptrs: Optional[torch.Tensor] = None,
       token_to_slot: Optional[torch.Tensor] = None,
-      swiglu_clamp_after_silu: bool = False):
+      swiglu_clamp_after_silu: bool = False,
+      local_assignment_capacity: int = -1):
     seq_len = input.shape[0]
     if use_int8_woq_per_channel:
         # Note: The weight shape for INT8 weight only quantization is different, i.e.,

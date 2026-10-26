@@ -43,9 +43,11 @@
 #include <ATen/native/cuda/Resize.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <tuple>
 
 #define C10_THROW_ERROR_FORMATTED(ErrorType, ...)                                                                      \
@@ -558,7 +560,7 @@ public:
         torch::optional<torch::Tensor> const& gated_slot_lora_ranks = torch::nullopt,
         torch::optional<torch::Tensor> const& gated_slot_lora_weight_ptrs = torch::nullopt,
         torch::optional<torch::Tensor> const& token_to_slot = torch::nullopt,
-        bool const swiglu_clamp_after_silu = false)
+        bool const swiglu_clamp_after_silu = false, int64_t const local_assignment_capacity = -1)
     {
         EagerMoeWorkspaceScope::registerCurrent(this, input.get_device());
         std::lock_guard<std::mutex> lock(mMutex);
@@ -753,6 +755,28 @@ public:
 
         setRunnerProfiles(profile_ids, lora_active);
 
+        if (local_assignment_capacity >= 0)
+        {
+            auto const* balanced_workspace = std::getenv("TRTLLM_MOE_ENABLE_BALANCED_WORKSPACE");
+            auto const* perfect_router = std::getenv("ENABLE_PERFECT_ROUTER");
+            TORCH_CHECK(balanced_workspace && std::string_view(balanced_workspace) == "1" && perfect_router
+                    && std::string_view(perfect_router) == "1",
+                "Local assignment capacity requires both TRTLLM_MOE_ENABLE_BALANCED_WORKSPACE=1 and "
+                "ENABLE_PERFECT_ROUTER=1");
+#if defined(USING_OSS_CUTLASS_MOE_GEMM)
+            TORCH_CHECK(isFp8Quant() && mOutputDtype == c10::ScalarType::BFloat16 && !min_latency_mode && !lora_active
+                    && !use_dynamic_fc2_scale && !input_sf.has_value() && base_activation_type == ActivationType::Swiglu
+                    && !fc1_expert_biases.has_value() && !fc2_expert_biases.has_value() && enable_alltoall
+                    && ep_size == 4 && tp_size == 1,
+                "Balanced workspace supports only per-tensor FP8/BF16 SwiGLU, EP4/TP1 all-to-all without bias or LoRA");
+            TORCH_CHECK(local_assignment_capacity > 0 && num_rows * experts_per_token % ep_size == 0
+                    && local_assignment_capacity == num_rows * experts_per_token / ep_size,
+                "Invalid perfect-router local assignment capacity");
+#else
+            TORCH_CHECK(false, "Balanced workspace requires the open-source CUTLASS MoE kernels");
+#endif
+        }
+
         auto stream = at::cuda::getCurrentCUDAStream(input.get_device());
 
         std::vector<int64_t> output_shape = {num_rows, unpadded_hidden_size_val};
@@ -819,7 +843,7 @@ public:
 
         WorkspaceInfo const& workspace_info = getWorkspaceInfo(num_rows, hidden_size, inter_size, num_experts_total,
             static_cast<int>(experts_per_token), base_activation_type, parallelism_config, min_latency_mode, stream,
-            lora_active);
+            lora_active, local_assignment_capacity);
 
         auto quant_params
             = getQuantParams(num_experts_on_rank, hidden_size, inter_size, quant_scales, base_activation_type);
@@ -865,7 +889,8 @@ public:
             unpadded_hidden_size_val, inter_size, num_experts_total, static_cast<int>(experts_per_token),
             static_cast<char*>(workspace_info.scratch.tensor().data_ptr()), output.data_ptr(),
             static_cast<int*>(workspace_info.src_to_dest_map), parallelism_config, enable_alltoall, lora_active,
-            lora_params, mUseDeepSeekFP8BlockScaling, min_latency_mode, min_latency_params, stream);
+            lora_params, mUseDeepSeekFP8BlockScaling, min_latency_mode, min_latency_params, stream,
+            local_assignment_capacity);
 #else
         mKernelRunner->runMoe(input.const_data_ptr(),
             input_sf.has_value() ? input_sf.value().const_data_ptr() : nullptr,
@@ -1447,17 +1472,28 @@ private:
     WorkspaceInfo const& getWorkspaceInfo(int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size,
         int num_experts, int experts_per_token, ActivationType activation_type,
         kernels::MOEParallelismConfig const& parallelismConfig, bool min_latency_mode, cudaStream_t stream,
-        bool use_lora = false)
+        bool use_lora = false, int64_t const local_assignment_capacity = -1)
     {
-        size_t moe_workspace_size = mKernelRunner->getWorkspaceSize(num_rows, hidden_size, inter_size, num_experts,
-            experts_per_token, activation_type, parallelismConfig, use_lora, mUseDeepSeekFP8BlockScaling,
-            min_latency_mode, mUseW4GroupScaling);
+        size_t moe_workspace_size = mKernelRunner->getWorkspaceSize(
+            num_rows, hidden_size, inter_size, num_experts, experts_per_token, activation_type, parallelismConfig,
+            use_lora, mUseDeepSeekFP8BlockScaling, min_latency_mode, mUseW4GroupScaling
+#if defined(USING_OSS_CUTLASS_MOE_GEMM)
+            ,
+            local_assignment_capacity
+#endif
+        );
         size_t src_to_dest_map_size = experts_per_token * num_rows * sizeof(int);
         auto& workspace_info = mStreamWorkspaces[{c10::cuda::current_device(), stream}];
 
         std::vector<size_t> workspaces{moe_workspace_size, src_to_dest_map_size};
 
         int64_t const total_workspace_size = common::calculateTotalWorkspaceSize(workspaces.data(), workspaces.size());
+
+        if (local_assignment_capacity >= 0)
+        {
+            TLLM_LOG_DEBUG("Balanced CUTLASS MoE: local capacity=%lld, workspace bytes=%lld",
+                static_cast<long long>(local_assignment_capacity), static_cast<long long>(total_workspace_size));
+        }
 
         bool is_capturing = tensorrt_llm::common::isCapturing(stream);
         auto const& workspace = workspace_info.scratch.get(total_workspace_size, is_capturing);

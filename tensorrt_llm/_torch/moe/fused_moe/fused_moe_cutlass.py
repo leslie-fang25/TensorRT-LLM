@@ -1128,6 +1128,7 @@ class CutlassFusedMoE(MoEImplBase):
             # kernel path within the <e4m3, e4m3> CutlassMoeFCRunner template
             # (per-tensor FP8 otherwise).
             use_mxfp8_weight_scaling=self.has_mxfp8,
+            local_assignment_capacity=ctx.local_assignment_capacity,
             **lora_kwargs,
         )
         # When moe_output is provided, the result is written in-place and

@@ -364,6 +364,14 @@ def create_moe(
         allow_degradation=allow_backend_degradation,
     )
 
+    from .balanced_workspace import (BALANCED_WORKSPACE_ENV,
+                                     balanced_workspace_enabled)
+
+    if balanced_workspace_enabled() and moe_cls is not CutlassFusedMoE:
+        raise NotImplementedError(
+            f"{BALANCED_WORKSPACE_ENV}=1 is unsupported by resolved implementation {moe_cls.__name__}"
+        )
+
     # This dispatch needs no per-class entry: inheriting ``MoEImplBase`` is
     # enough to be wrapped. Becoming *selectable* still needs the constructor
     # branch in ``create_moe_backend`` above plus ``moe_resolution``'s

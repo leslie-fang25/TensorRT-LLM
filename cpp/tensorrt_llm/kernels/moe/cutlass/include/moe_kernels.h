@@ -531,7 +531,7 @@ public:
     virtual size_t getWorkspaceSize(int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size,
         int const num_experts, int const experts_per_token, ActivationType activation_type,
         MOEParallelismConfig parallelism_config, bool use_lora, bool use_deepseek_fp8_block_scale,
-        bool min_latency_mode, bool use_awq)
+        bool min_latency_mode, bool use_awq, int64_t local_assignment_capacity = -1)
         = 0;
     virtual void setTactic(std::optional<cutlass_extensions::CutlassGemmConfig> gemm1_config,
         std::optional<cutlass_extensions::CutlassGemmConfig> gemm2_config)
@@ -546,7 +546,7 @@ public:
         int const experts_per_token, char* workspace_ptr, void* final_output, int* unpermuted_row_to_permuted_row,
         MOEParallelismConfig parallelism_config, bool const enable_alltoall, bool use_lora, LoraParams& lora_params,
         bool use_deepseek_fp8_block_scale, bool min_latency_mode, MoeMinLatencyParams& min_latency_params,
-        cudaStream_t stream)
+        cudaStream_t stream, int64_t local_assignment_capacity = -1)
         = 0;
 
     // Aliases for profiling the gemms
@@ -683,7 +683,7 @@ public:
     size_t getWorkspaceSize(int64_t const num_rows, int64_t const hidden_size, int64_t const fc1_output_size,
         int const num_experts, int const experts_per_token, ActivationType activation_type,
         MOEParallelismConfig parallelism_config, bool use_lora, bool use_deepseek_fp8_block_scale,
-        bool min_latency_mode, bool use_awq) override;
+        bool min_latency_mode, bool use_awq, int64_t local_assignment_capacity = -1) override;
 
     void setTactic(std::optional<cutlass_extensions::CutlassGemmConfig> gemm1_config,
         std::optional<cutlass_extensions::CutlassGemmConfig> gemm2_config) override
@@ -715,7 +715,7 @@ public:
         int const experts_per_token, char* workspace_ptr, void* final_output, int* unpermuted_row_to_permuted_row,
         MOEParallelismConfig parallelism_config, bool const enable_alltoall, bool use_lora, LoraParams& lora_params,
         bool use_deepseek_fp8_block_scale, bool min_latency_mode, MoeMinLatencyParams& min_latency_params,
-        cudaStream_t stream) override;
+        cudaStream_t stream, int64_t local_assignment_capacity = -1) override;
 
     // We make these GEMM1 & GEMM2 static because they need to be stateless for the profiler to work
     static void gemm1(MoeGemmRunner<T, WeightType, OutputType, ScaleBiasType>& gemm_runner,
@@ -885,11 +885,11 @@ private:
     std::map<std::string, std::pair<size_t, size_t>> getWorkspaceDeviceBufferSizes(int64_t const num_rows,
         int64_t const hidden_size, int64_t const inter_size, int const num_experts_per_node,
         int const experts_per_token, ActivationType activation_type, bool use_lora, bool use_deepseek_fp8_block_scale,
-        bool min_latency_mode, bool use_awq);
+        bool min_latency_mode, bool use_awq, int64_t local_assignment_capacity);
     void configureWsPtrs(char* ws_ptr, int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size,
         int const num_experts_per_node, int const experts_per_token, ActivationType activation_type,
         MOEParallelismConfig parallelism_config, bool use_lora, bool use_deepseek_fp8_block_scale,
-        bool min_latency_mode, bool use_awq);
+        bool min_latency_mode, bool use_awq, int64_t local_assignment_capacity);
 
 private:
     static bool useAwq(cutlass_kernels::QuantParams const& quant_params)

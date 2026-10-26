@@ -52,6 +52,7 @@ from tensorrt_llm._torch.route_capture import get_active_route_capture  # R3
 from tensorrt_llm._torch.utils import EventType, Fp4QuantizedTensor
 from tensorrt_llm.tools.layer_wise_benchmarks import get_calibrator
 
+from .balanced_workspace import balanced_assignment_capacity, validate_balanced_workspace
 from .communication import DeepEP, DeepEPLowLatency, NcclEP, NVLinkOneSided, NVLinkTwoSided
 from .communication.nvlink_two_sided_flashinfer import NVLinkTwoSidedFlashinfer
 from .fused_moe_cutlass import raise_moe_lora_multichunk_unsupported
@@ -210,6 +211,8 @@ class ExternalCommMoEScheduler(MoEScheduler):
         # May fall back AllToAll -> AllGather; this is the only sanctioned
         # mutation of ``moe.comm`` from a scheduler.
         moe.determine_communication_method(all_rank_num_tokens_padded, num_chunks)
+        if getattr(moe, "_enable_balanced_workspace", False):
+            validate_balanced_workspace(moe)
 
         # ========== Step 3: Execute MoE computation ==========
         if num_chunks == 1:
@@ -1052,6 +1055,13 @@ class ExternalCommMoEScheduler(MoEScheduler):
                 output_dtype,
                 do_finalize,
                 use_deep_ep_direct_metadata=use_deep_ep_direct_metadata,
+            ),
+            local_assignment_capacity=(
+                balanced_assignment_capacity(
+                    all_rank_num_tokens, moe.routing_method.top_k, moe.ep_size
+                )
+                if getattr(moe, "_enable_balanced_workspace", False)
+                else -1
             ),
         )
 

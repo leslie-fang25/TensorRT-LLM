@@ -1396,7 +1396,8 @@ __global__ void expandInputRowsKernel(InputActivationsType const* unpermuted_inp
     float const* fc1_act_global_scale, bool use_per_expert_act_scale, int64_t const* expert_first_token_offset,
     TmaWarpSpecializedGroupedGemmInput::ElementSF* fc1_act_sf_flat,
     TmaWarpSpecializedGroupedGemmInput::ElementSF const* input_sf, bool const swizzled_input_sf,
-    int64_t const num_experts_per_node, InputActivationsType const* prequant_scales = nullptr)
+    int64_t const num_experts_per_node, InputActivationsType const* prequant_scales,
+    int64_t const local_assignment_capacity)
 {
     static_assert(BlockScalingType == TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE || !PRE_QUANT_AWQ,
         "AWQ and Block Scaling are mutually exclusive");
@@ -1440,6 +1441,15 @@ __global__ void expandInputRowsKernel(InputActivationsType const* unpermuted_inp
         = TmaWarpSpecializedGroupedGemmInput::alignToSfDim(hidden_size, min_k_dim_alignment);
 
     int64_t const num_valid_tokens = expert_first_token_offset[num_experts_per_node];
+    if (local_assignment_capacity >= 0 && num_valid_tokens > local_assignment_capacity)
+    {
+        // Fail before any compact scratch write if the caller's routing contract is violated.
+        if (blockIdx.x == 0 && threadIdx.x == 0)
+        {
+            printf("CUTLASS MoE local assignment capacity exceeded\n");
+        }
+        __trap();
+    }
     for (int64_t permuted_row = blockIdx.x; permuted_row < num_valid_tokens; permuted_row += gridDim.x)
     {
         int64_t const unpermuted_row = permuted_row_to_unpermuted_row[permuted_row];
@@ -1604,7 +1614,7 @@ void expandInputRowsKernelLauncher(InputActivationsType const* unpermuted_input,
     int const num_experts_per_node, QuantParams const& quant_params, bool use_per_expert_act_scale,
     int64_t* expert_first_token_offset, TmaWarpSpecializedGroupedGemmInput::ElementSF* fc1_act_sf_flat,
     TmaWarpSpecializedGroupedGemmInput::ElementSF const* input_sf, bool const swizzled_input_sf,
-    void const* prequant_scales, cudaStream_t stream)
+    void const* prequant_scales, cudaStream_t stream, int64_t const local_assignment_capacity)
 {
 #ifdef ENABLE_FP4
     TLLM_CHECK_WITH_INFO(
@@ -1684,7 +1694,8 @@ void expandInputRowsKernelLauncher(InputActivationsType const* unpermuted_input,
     cudaLaunchKernelEx(&config, func, unpermuted_input, permuted_output, unpermuted_scales, permuted_scales,
         permuted_row_to_unpermuted_row, num_rows, hidden_size, k, quant_params.fp4.fc1.act_global_scale,
         use_per_expert_act_scale, expert_first_token_offset, fc1_act_sf_flat, input_sf, swizzled_input_sf,
-        num_experts_per_node, reinterpret_cast<InputActivationsType const*>(prequant_scales));
+        num_experts_per_node, reinterpret_cast<InputActivationsType const*>(prequant_scales),
+        local_assignment_capacity);
 }
 
 struct Fp8BlockScaleActOutput
@@ -1757,7 +1768,7 @@ void padEmptyFp8BlockScaleMoeInput(T* permuted_input, int64_t const* expert_firs
         QuantParams const& quant_params, bool use_per_expert_act_scale, int64_t* expert_first_token_offset,            \
         TmaWarpSpecializedGroupedGemmInput::ElementSF* fc1_act_sf_flat,                                                \
         TmaWarpSpecializedGroupedGemmInput::ElementSF const* input_sf, bool const swizzled_input_sf,                   \
-        void const* prequant_scales, cudaStream_t stream)
+        void const* prequant_scales, cudaStream_t stream, int64_t const local_assignment_capacity)
 
 // Instantiate the data types that are used by the external pytorch op
 INSTANTIATE_EXPAND_INPUT_ROWS(float, float);
@@ -3234,11 +3245,26 @@ std::map<std::string, std::pair<size_t, size_t>>
 CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enable>::getWorkspaceDeviceBufferSizes(
     int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size, int const num_experts_per_node,
     int const experts_per_token, ActivationType activation_type, bool use_lora, bool use_deepseek_fp8_block_scale,
-    bool min_latency_mode, bool use_awq)
+    bool min_latency_mode, bool use_awq, int64_t const local_assignment_capacity)
 {
     size_t num_moe_inputs = min_latency_mode ? num_experts_per_node * num_rows : experts_per_token * num_rows;
-    size_t const permuted_elems = num_moe_inputs * hidden_size;
-    size_t const interbuf_elems = num_moe_inputs * inter_size;
+    if (local_assignment_capacity >= 0)
+    {
+        TLLM_CHECK_WITH_INFO(use_fp8 && !use_mxfp8_weight_scaling_ && !use_lora && !use_deepseek_fp8_block_scale
+                && !min_latency_mode && !use_awq && activation_type == ActivationType::Swiglu
+                && moe_gemm_runner_.getSM() == 103,
+            "Balanced workspace requires the SM103 per-tensor FP8 SwiGLU path");
+        TLLM_CHECK_WITH_INFO(gemm1_config_ && gemm2_config_ && gemm1_config_->is_tma_warp_specialized
+                && gemm2_config_->is_tma_warp_specialized,
+            "Balanced workspace requires TMA warp-specialized FC1 and FC2 tactics");
+        TLLM_CHECK_WITH_INFO(
+            local_assignment_capacity > 0 && local_assignment_capacity <= static_cast<int64_t>(num_moe_inputs),
+            "Invalid local assignment capacity");
+    }
+    // Routing maps retain their global index domain; only compact compute buffers use this bound.
+    size_t const compute_rows = local_assignment_capacity >= 0 ? local_assignment_capacity : num_moe_inputs;
+    size_t const permuted_elems = compute_rows * hidden_size;
+    size_t const interbuf_elems = compute_rows * inter_size;
     size_t glu_inter_elems = 0;
     bool is_gated_activation = isGatedActivation(activation_type);
     if (is_gated_activation)
@@ -3278,7 +3304,7 @@ CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enable>::
     size_t const fc1_result_size = interbuf_elems * dtype_size;        // Activation quantizes so back to dtype_size
     size_t const fc2_result_size = min_latency_mode
         ? 0
-        : num_moe_inputs * hidden_size * gemm_output_dtype; // May be an intermediate type for quantization
+        : compute_rows * hidden_size * gemm_output_dtype; // May be an intermediate type for quantization
 
     // If topk is greater than num_experts_per_node (i.e. large EP value), then we don't need to allocate for the whole
     // tokens*topk
@@ -3424,12 +3450,13 @@ template <class T, class WeightType, class OutputType, class InputType, class Ba
 size_t CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enable>::getWorkspaceSize(
     int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size, int const num_experts,
     int const experts_per_token, ActivationType activation_type, MOEParallelismConfig parallelism_config, bool use_lora,
-    bool use_deepseek_fp8_block_scale, bool min_latency_mode, bool use_awq)
+    bool use_deepseek_fp8_block_scale, bool min_latency_mode, bool use_awq, int64_t const local_assignment_capacity)
 {
     int const ep_size = parallelism_config.ep_size;
     TLLM_CHECK_WITH_INFO(num_experts % ep_size == 0, "Number of experts must be a multiple of ep size");
     auto sizes_map = getWorkspaceDeviceBufferSizes(num_rows, hidden_size, inter_size, num_experts / ep_size,
-        experts_per_token, activation_type, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq);
+        experts_per_token, activation_type, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq,
+        local_assignment_capacity);
     std::vector<size_t> sizes(sizes_map.size());
     std::transform(sizes_map.begin(), sizes_map.end(), sizes.begin(), [](auto& v) { return v.second.first; });
     size_t size = tensorrt_llm::common::calculateTotalWorkspaceSize(sizes.data(), sizes.size());
@@ -3441,10 +3468,11 @@ template <class T, class WeightType, class OutputType, class InputType, class Ba
 void CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enable>::configureWsPtrs(char* ws_ptr,
     int64_t const num_rows, int64_t const hidden_size, int64_t const inter_size, int const num_experts_per_node,
     int const experts_per_token, ActivationType activation_type, MOEParallelismConfig parallelism_config, bool use_lora,
-    bool use_deepseek_fp8_block_scale, bool min_latency_mode, bool use_awq)
+    bool use_deepseek_fp8_block_scale, bool min_latency_mode, bool use_awq, int64_t const local_assignment_capacity)
 {
     auto workspaces = getWorkspaceDeviceBufferSizes(num_rows, hidden_size, inter_size, num_experts_per_node,
-        experts_per_token, activation_type, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq);
+        experts_per_token, activation_type, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq,
+        local_assignment_capacity);
 
     auto getWsPtr = [&](auto type, std::string const& name)
     {
@@ -4399,7 +4427,7 @@ void CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enab
     int const experts_per_token, char* workspace_ptr, void* final_output_void, int* unpermuted_row_to_permuted_row,
     MOEParallelismConfig parallelism_config, bool const enable_alltoall, bool use_lora, LoraParams& lora_params,
     bool use_deepseek_fp8_block_scale, bool min_latency_mode, MoeMinLatencyParams& min_latency_params,
-    cudaStream_t stream)
+    cudaStream_t stream, int64_t const local_assignment_capacity)
 {
     static constexpr bool int_scales_required
         = std::is_same<WeightType, uint8_t>::value || std::is_same<WeightType, cutlass::uint4b_t>::value || use_wfp4a16;
@@ -4546,7 +4574,8 @@ void CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enab
     int const num_experts_per_node = full_num_experts / parallelism_config.ep_size;
 
     configureWsPtrs(workspace_ptr, num_rows, hidden_size, inter_size, num_experts_per_node, experts_per_token,
-        fc1_activation_type, parallelism_config, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq);
+        fc1_activation_type, parallelism_config, use_lora, use_deepseek_fp8_block_scale, min_latency_mode, use_awq,
+        local_assignment_capacity);
 
     int start_expert = num_experts_per_node * parallelism_config.ep_rank;
     int end_expert = start_expert + num_experts_per_node;
@@ -4672,7 +4701,8 @@ void CutlassMoeFCRunner<T, WeightType, OutputType, InputType, BackBoneType, Enab
                 permuted_token_final_scales_, permuted_row_to_unpermuted_row_, num_rows, hidden_size, experts_per_token,
                 num_experts_per_node, quant_params, use_per_expert_act_scale, expert_first_token_offset_,
                 fc1_fp4_act_scale_, input_sf, swizzled_input_sf,
-                (use_w4afp8 && !use_fp8_input) ? quant_params.groupwise.fc1.act_scales : nullptr, stream);
+                (use_w4afp8 && !use_fp8_input) ? quant_params.groupwise.fc1.act_scales : nullptr, stream,
+                local_assignment_capacity);
         }
 
         int64_t* gemm_expert_first_token_offset = expert_first_token_offset_;

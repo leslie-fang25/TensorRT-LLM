@@ -626,6 +626,8 @@ class MoERunContext:
     all_rank_num_tokens: Optional[List[int]] = None
     # produced by the comm strategy, one object per forward
     comm_plan: Optional[MoECommPlan] = None
+    # Proven capacity from the perfect-router caller; -1 preserves worst-case allocation.
+    local_assignment_capacity: int = -1
 
 
 def require_comm_plan(impl: object, ctx: MoERunContext) -> MoECommPlan:
