@@ -34,6 +34,8 @@ from tensorrt_llm._torch.moe.fused_moe.communication.nccl_ep import NcclEP
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization import QuantAlgo
 
+_REAL_NCCL_EP_PROBE = nccl_ep_utils.nccl_ep_supports_low_latency
+
 
 def _make_model_config(
     act_dtype: torch.dtype = torch.bfloat16,
@@ -58,6 +60,11 @@ def _make_model_config(
         use_low_precision_moe_combine=False,
         moe_load_balancer=None,
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_low_latency_probe_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(nccl_ep_utils, "nccl_ep_supports_low_latency", lambda _: True)
 
 
 def _strategy_unavailable(*args, **kwargs):
@@ -497,6 +504,99 @@ def test_auto_selection_uses_nccl_ep_with_missing_moe_max_num_tokens(
     assert isinstance(strategy, _FakeNcclEP)
     assert strategy.max_num_tokens == model_config.max_num_tokens
     assert strategy.moe_max_num_tokens is None
+
+
+@pytest.mark.cpu_only
+def test_auto_selection_falls_back_without_nccl_device_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_nccl_ep_v02(monkeypatch)
+    monkeypatch.setattr(communication_factory, "NVLinkOneSided", _strategy_unavailable)
+    monkeypatch.setattr(communication_factory, "NVLinkTwoSided", _strategy_unavailable)
+    monkeypatch.setenv("TRTLLM_CAN_USE_DEEP_EP", "0")
+    monkeypatch.delenv("TRTLLM_FORCE_COMM_METHOD", raising=False)
+    monkeypatch.setattr(nccl_ep_utils, "is_nccl_ep_installed", lambda: True)
+    probe = Mock(return_value=False)
+    monkeypatch.setattr(nccl_ep_utils, "nccl_ep_supports_low_latency", probe)
+    model_config = _make_model_config()
+
+    strategy = communication_factory.CommunicationFactory.create_strategy(
+        model_config,
+        num_experts=32,
+        num_slots=32,
+        top_k=8,
+        expert_size_per_partition=16,
+        hidden_size=4096,
+    )
+
+    assert isinstance(strategy, AllGatherReduceScatter)
+    probe.assert_called_once_with(model_config.mapping)
+
+
+@pytest.mark.cpu_only
+def test_forced_nccl_ep_rejects_unsupported_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_nccl_ep_v02(monkeypatch)
+    monkeypatch.setattr(nccl_ep_utils, "is_nccl_ep_installed", lambda: True)
+    monkeypatch.setattr(nccl_ep_utils, "nccl_ep_supports_low_latency", lambda _: False)
+    with pytest.raises(RuntimeError, match="Device API"):
+        communication_factory.CommunicationFactory._create_forced_method(
+            "NCCL_EP",
+            _make_model_config(),
+            num_experts=32,
+            num_slots=32,
+            top_k=8,
+            expert_size_per_partition=16,
+            payload_in_workspace=False,
+            alltoall_result_do_sum=True,
+            hidden_size=4096,
+        )
+
+
+@pytest.mark.cpu_only
+@pytest.mark.parametrize("device_api_support", [True, False])
+def test_nccl_ep_device_api_probe(
+    monkeypatch: pytest.MonkeyPatch, device_api_support: bool
+) -> None:
+    import nccl.core as nccl_core
+    from mpi4py import MPI
+    from nccl.core.typing import NcclGinType
+
+    import tensorrt_llm._utils as utils
+    from tensorrt_llm.mapping import Mapping
+
+    native_comm = Mock(
+        device_api_support=device_api_support, n_lsa_teams=1, gin_type=NcclGinType.NONE
+    )
+    init = Mock(return_value=native_comm)
+    monkeypatch.setattr(nccl_core.Communicator, "init", init)
+    monkeypatch.setattr(nccl_core, "get_unique_id", lambda: SimpleNamespace(as_bytes=b"uid"))
+    monkeypatch.setattr(nccl_core.UniqueId, "from_bytes", lambda data: data)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(nccl_ep_utils, "_nccl_ep_support_cache", {})
+
+    parent = Mock()
+    ep_comm = parent.Create_group.return_value
+    ep_comm.Get_rank.return_value = 0
+    ep_comm.Get_size.return_value = 2
+    ep_comm.bcast.side_effect = lambda payload, root: payload
+
+    def reduce_min(value: int, op: object) -> int:
+        assert op == MPI.MIN
+        return value
+
+    ep_comm.allreduce.side_effect = reduce_min
+    monkeypatch.setattr(utils, "mpi_disabled", lambda: False)
+    monkeypatch.setattr(utils, "mpi_comm", lambda: parent)
+    mapping = Mapping(world_size=2, rank=0, tp_size=2, moe_ep_size=2)
+
+    assert _REAL_NCCL_EP_PROBE(mapping) is device_api_support
+    parent.Get_group.return_value.Incl.assert_called_once_with(mapping.moe_ep_group)
+    native_comm.finalize.assert_called_once()
+    native_comm.destroy.assert_called_once()
+    ep_comm.Free.assert_called_once()
+    parent.Free.assert_not_called()
+    assert _REAL_NCCL_EP_PROBE(mapping) is device_api_support
+    init.assert_called_once()
 
 
 @pytest.mark.parametrize(

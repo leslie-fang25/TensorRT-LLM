@@ -64,10 +64,19 @@ class NcclEP(Communication):
     ):
         super().__init__(mapping)
 
-        from tensorrt_llm._torch.moe.fused_moe.nccl_ep_utils import is_nccl_ep_installed
+        from tensorrt_llm._torch.moe.fused_moe.nccl_ep_utils import (
+            is_nccl_ep_installed,
+            nccl_ep_supports_low_latency,
+        )
 
         if not is_nccl_ep_installed():
             raise RuntimeError("nccl-ep is not installed.")
+
+        if not nccl_ep_supports_low_latency(mapping):
+            raise RuntimeError(
+                "NCCL EP low latency requires Device API support on every EP rank "
+                "and full GIN support when the EP group spans multiple LSA teams."
+            )
 
         self.num_slots = num_slots
         self.num_experts = num_slots
