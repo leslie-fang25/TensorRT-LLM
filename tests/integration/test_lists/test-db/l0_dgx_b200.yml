@@ -155,29 +155,29 @@ l0_dgx_b200:
   tests:
   # ------------- MoE: test_multi_gpu (by backend x quant) ---------------
   # --- CUTLASS ---
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and W4A8_MXFP4_FP8"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and NVFP4"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and W4A8_MXFP4_MXFP8"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and W8A16"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and MXFP8 and not W4A8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and W4A8_MXFP4_FP8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and NVFP4"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and W4A8_MXFP4_MXFP8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and W8A16"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and MXFP8 and not W4A8"
   # --- TRTLLM ---
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=NVLINK_ONE_SIDED-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-backend=TRTLLM-quant=W4A8_MXFP4_FP8-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=NVLINK_TWO_SIDED-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-backend=TRTLLM-quant=W4A8_MXFP4_FP8-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=ALLGATHER-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-backend=TRTLLM-quant=W4A8_MXFP4_FP8-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=NVLINK_ONE_SIDED-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-impl=trtllm.trtllm_gen.fused_moe.w4a8_mxfp4_fp8-quant=W4A8_MXFP4_FP8-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=NVLINK_TWO_SIDED-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-impl=trtllm.trtllm_gen.fused_moe.w4a8_mxfp4_fp8-quant=W4A8_MXFP4_FP8-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu[parallel=DEP-comm=ALLGATHER-e8_k1_h512_i512-seq=8-dtype=torch.bfloat16-impl=trtllm.trtllm_gen.fused_moe.w4a8_mxfp4_fp8-quant=W4A8_MXFP4_FP8-routing=Renormalize]
   # GPT-OSS MXFP4/FP8 reference checks for DEP/DeepEP and aligned TTP.
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and W4A8_MXFP4_FP8 and 1.702 and bfloat16 and Renormalize and ((DEP and DEEPEP and not DEEPEPLOWLATENCY and e60_k4_h2048_i1408) or (TTP and NVLINK_ONE_SIDED and e8_k1_h512_i512))"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and NVFP4 and not W4A8"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and FP8_BLOCK_SCALES"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and W4A8_NVFP4_FP8"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and W4A16_MXFP4"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "TRTLLM and W4A8_MXFP4_MXFP8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and W4A8_MXFP4_FP8 and 1.702 and bfloat16 and Renormalize and ((DEP and DEEPEP and not DEEPEPLOWLATENCY and e60_k4_h2048_i1408) or (TTP and NVLINK_ONE_SIDED and e8_k1_h512_i512))"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and NVFP4 and not W4A8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and FP8_BLOCK_SCALES"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and W4A8_NVFP4_FP8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and W4A16_MXFP4"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.trtllm_gen.fused_moe. and W4A8_MXFP4_MXFP8"
   # --- CUTEDSL (NVFP4 only) ---
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTEDSL"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutedsl.grouped_gemm. or trtllm.cutedsl.fused_fc12. or trtllm.cutedsl.mega_moe.)"
   # --- DEEPGEMM (FP8_BLOCK_SCALES only) ---
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "DEEPGEMM and not MEGAMOE_DEEPGEMM"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(deepgemm.cuda.grouped_gemm. or deepgemm.cuda.mega_moe.) and not deepgemm.cuda.mega_moe."
   # --- MEGAMOE_DEEPGEMM (W4A8_MXFP4_MXFP8 only) ---
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "MEGAMOE_DEEPGEMM"
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "MEGAMOE_CUTEDSL"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "deepgemm.cuda.mega_moe."
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "trtllm.cutedsl.mega_moe."
   # ------------- MoE: test_multi_gpu_eplb ---------------
   - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu_eplb -k "not None"
 - condition:
@@ -407,7 +407,7 @@ l0_dgx_b200:
   - accuracy/test_llm_api_pytorch.py::TestQwen3_30B_A3B_Instruct_2507::test_skip_softmax_attention_4gpus[target_sparsity_0.9-fp8kv=True]
   - disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-120B-A12B-FP8]
   # ---- FP8 per-tensor (QDQ) moved to post-merge; block-scale/W4A8 stay in pre ----
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "CUTLASS and FP8 and not FP8_BLOCK_SCALES and not W4A8 and not MXFP8"
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_multi_gpu -k "(trtllm.cutlass.grouped_gemm. or deepgemm.cuda.hopper_grouped_gemm. or trtllm.triton.fp8_act_grouped_gemm. or trtllm.triton.grouped_gemm.) and FP8 and not FP8_BLOCK_SCALES and not W4A8 and not MXFP8"
   # Kimi K3 Tier-1: truncated 4-layer (KDA + first full-attention) SA spec-dec
   # logits parity on TP=4 (skips cleanly when the Kimi-K3 checkpoint is not
   # staged under LLM_MODELS_ROOT).

@@ -86,14 +86,14 @@ l0_gr100:
   - unittest/_torch/moe/test_moe_sorted_routing.py::test_backend_runs_on_sorted_routing[200-CUTEDSL_FC12]
   - unittest/_torch/moe/test_moe_sorted_routing.py::test_shared_expert_runs_beside_fc12_on_reserved_sms[8]
   - unittest/_torch/moe/test_moe_sorted_routing.py::test_shared_expert_runs_beside_fc12_on_reserved_sms[64]
-  - unittest/_torch/moe/test_moe_backend.py::test_moe_backend[e60_k4_h2048_i1408-seq=1-dtype=torch.bfloat16-backend=CUTEDSL-quant=NVFP4_PLUS-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_backend.py::test_moe_backend[e60_k4_h2048_i1408-seq=8-dtype=torch.bfloat16-backend=CUTEDSL-quant=NVFP4_PLUS-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_backend.py::test_fc1_prologue_wait_preserves_exhaustion
-  - unittest/_torch/moe/test_moe_backend.py::test_fc1_prologue_wait_keeps_a_longer_stream_open
+  - unittest/_torch/moe/test_moe_impl.py::test_moe_impl[e60_k4_h2048_i1408-seq=1-dtype=torch.bfloat16-impl=trtllm.cutedsl.grouped_gemm.nvfp4_plus-quant=NVFP4_PLUS-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_impl.py::test_moe_impl[e60_k4_h2048_i1408-seq=8-dtype=torch.bfloat16-impl=trtllm.cutedsl.grouped_gemm.nvfp4_plus-quant=NVFP4_PLUS-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_impl.py::test_fc1_prologue_wait_preserves_exhaustion
+  - unittest/_torch/moe/test_moe_impl.py::test_fc1_prologue_wait_keeps_a_longer_stream_open
   # Single-GPU MEGAMOE_CUTEDSL on SM107.
-  - unittest/_torch/moe/test_moe_backend.py::test_moe_backend[e60_k4_h2048_i1408-seq=1-dtype=torch.bfloat16-backend=MEGAMOE_CUTEDSL-quant=NVFP4-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_backend.py::test_moe_backend[e60_k4_h2048_i1408-seq=8-dtype=torch.bfloat16-backend=MEGAMOE_CUTEDSL-quant=NVFP4-routing=Renormalize]
-  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_single_gpu[e256_k6_h4096_i2048-seq=1-dtype=torch.bfloat16-backend=MEGAMOE_CUTEDSL-quant=NVFP4-routing=DeepSeekV3]
+  - unittest/_torch/moe/test_moe_impl.py::test_moe_impl[e60_k4_h2048_i1408-seq=1-dtype=torch.bfloat16-impl=trtllm.cutedsl.mega_moe.nvfp4-quant=NVFP4-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_impl.py::test_moe_impl[e60_k4_h2048_i1408-seq=8-dtype=torch.bfloat16-impl=trtllm.cutedsl.mega_moe.nvfp4-quant=NVFP4-routing=Renormalize]
+  - unittest/_torch/moe/test_moe_module.py::test_configurable_moe_single_gpu[e256_k6_h4096_i2048-seq=1-dtype=torch.bfloat16-impl=trtllm.cutedsl.mega_moe.nvfp4-quant=NVFP4-routing=DeepSeekV3]
   # CuTe DSL GEMM/BMM kernels and their nvMatmulHeuristics-guided tactics.
   - unittest/_torch/kernels/parallel/test_cute_dsl_bf16_dense.py
   - unittest/_torch/kernels/parallel/test_fp4_linear.py::test_nvfp4_gemm_cutedsl

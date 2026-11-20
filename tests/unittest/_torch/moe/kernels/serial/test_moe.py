@@ -28,7 +28,7 @@ from tensorrt_llm.quantization.utils.fp4_utils import (
     reorder_rows_for_gated_act_gemm, shuffle_matrix_a, shuffle_matrix_sf_a)
 
 # NOTE: Some tests in this file are deprecated and skipped. They are now covered by the
-# unified MoE test framework in tests/unittest/_torch/modules/moe/test_moe_backend.py
+# unified MoE test framework in tests/unittest/_torch/moe/test_moe_impl.py
 # and test_moe_module.py. Add new MoE tests there instead of here.
 
 
@@ -926,7 +926,7 @@ def are_groups_valid(top_k_groups, n_groups):
 
 @pytest.mark.skip(
     reason=
-    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_backend.py and test_moe_module.py. Add new tests there."
+    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_impl.py and test_moe_module.py. Add new tests there."
 )
 @pytest.mark.skipif(
     getSMVersion() < 100 or getSMVersion() >= 110,
@@ -1064,7 +1064,7 @@ class TestMoeFP8:
 
 @pytest.mark.skip(
     reason=
-    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_backend.py and test_moe_module.py. Add new tests there."
+    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_impl.py and test_moe_module.py. Add new tests there."
 )
 @pytest.mark.skipif(
     getSMVersion() < 100 or getSMVersion() >= 110,
@@ -2017,7 +2017,7 @@ class TestMoeFp4:
 
 @pytest.mark.skip(
     reason=
-    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_backend.py and test_moe_module.py. Add new tests there."
+    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_impl.py and test_moe_module.py. Add new tests there."
 )
 @pytest.mark.skipif(
     getSMVersion() < 100 or getSMVersion() >= 110,
@@ -2252,7 +2252,7 @@ def test_moe_fp8_per_tensor_scale(num_tokens, hidden_size, intermediate_size,
 
 @pytest.mark.skip(
     reason=
-    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_backend.py and test_moe_module.py. Add new tests there."
+    "Deprecated: covered by tests/unittest/_torch/moe/test_moe_impl.py and test_moe_module.py. Add new tests there."
 )
 @pytest.mark.skipif(
     getSMVersion() != 100,
